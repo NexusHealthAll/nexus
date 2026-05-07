@@ -1,18 +1,18 @@
 use axum::{extract::State, http::StatusCode, Json};
 use chrono::Utc;
 use jsonwebtoken::{encode, EncodingKey, Header};
-use sqlx::PgPool;
 use uuid::Uuid;
 use validator::Validate;
 
 use crate::{
-    errors::{AppError, AppResult},
+    routes::AppState,
+    utils::errors::{AppError, AppResult},
     models::user::{Claims, CreateUserRequest, LoginRequest, User, UserResponse},
 };
 
 /// POST /api/v1/auth/register
 pub async fn register(
-    State(pool): State<PgPool>,
+    State(state): State<AppState>,
     Json(payload): Json<CreateUserRequest>,
 ) -> AppResult<(StatusCode, Json<UserResponse>)> {
     payload.validate().map_err(|e| AppError::Validation(e.to_string()))?;
@@ -21,7 +21,7 @@ pub async fn register(
     let existing: Option<(Uuid,)> =
         sqlx::query_as("SELECT id FROM users WHERE email = $1")
             .bind(&payload.email)
-            .fetch_optional(&pool)
+            .fetch_optional(&state.pool)
             .await?;
 
     if existing.is_some() {
@@ -47,7 +47,7 @@ pub async fn register(
     .bind(&payload.email)
     .bind(&password_hash)
     .bind(&payload.role)
-    .fetch_one(&pool)
+    .fetch_one(&state.pool)
     .await?;
 
     Ok((StatusCode::CREATED, Json(UserResponse::from(user))))
@@ -55,7 +55,7 @@ pub async fn register(
 
 /// POST /api/v1/auth/login
 pub async fn login(
-    State(pool): State<PgPool>,
+    State(state): State<AppState>,
     Json(payload): Json<LoginRequest>,
 ) -> AppResult<Json<serde_json::Value>> {
     payload.validate().map_err(|e| AppError::Validation(e.to_string()))?;
@@ -69,7 +69,7 @@ pub async fn login(
         "#,
     )
     .bind(&payload.email)
-    .fetch_optional(&pool)
+    .fetch_optional(&state.pool)
     .await?;
 
     let user = user.ok_or_else(|| AppError::Unauthorized("Invalid email or password".to_string()))?;
@@ -89,7 +89,7 @@ pub async fn login(
     // Update last_login_at
     sqlx::query("UPDATE users SET last_login_at = NOW() WHERE id = $1")
         .bind(user.id)
-        .execute(&pool)
+        .execute(&state.pool)
         .await?;
 
     // Issue JWT

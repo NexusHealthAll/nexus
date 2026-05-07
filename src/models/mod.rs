@@ -1,6 +1,7 @@
 pub mod hospital;
 pub mod user;
 pub mod registration;
+pub mod admin_registration;
 pub mod access_policy;
 pub mod accreditation;
 pub mod location;

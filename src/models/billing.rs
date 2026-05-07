@@ -82,8 +82,8 @@ pub struct HospitalPaymentMethod {
     /// Whether this authorization is still valid (Paystack can deactivate tokens)
     pub is_active: bool,
 
-    /// The user who added this payment method
-    pub added_by: Uuid,
+    /// The user who added this payment method (NULL during initial registration)
+    pub added_by: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

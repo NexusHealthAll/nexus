@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 75bc36e21ccca6101e9cde751fb1d3ef587487c5ee6dd72ba58785608709ccd3 # shrinks to card_number = "6309404572094179", cvv = "725"
