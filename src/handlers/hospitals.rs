@@ -3,12 +3,12 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use sqlx::PgPool;
 use uuid::Uuid;
 use validator::Validate;
 
 use crate::{
-    errors::{AppError, AppResult},
+    routes::AppState,
+    utils::errors::{AppError, AppResult},
     models::hospital::{
         CreateHospitalRequest, Hospital, HospitalResponse, RegistrationStep,
         UpdateHospitalRequest, VerificationStatus,
@@ -18,7 +18,7 @@ use crate::{
 /// POST /api/v1/hospitals
 /// Step 1 (Setup): Register a new hospital with basic institutional credentials.
 pub async fn create_hospital(
-    State(pool): State<PgPool>,
+    State(state): State<AppState>,
     Json(payload): Json<CreateHospitalRequest>,
 ) -> AppResult<(StatusCode, Json<HospitalResponse>)> {
     payload.validate().map_err(|e| AppError::Validation(e.to_string()))?;
@@ -29,7 +29,7 @@ pub async fn create_hospital(
     )
     .bind(&payload.registration_number)
     .bind(&payload.email)
-    .fetch_optional(&pool)
+    .fetch_optional(&state.pool)
     .await?;
 
     if existing.is_some() {
@@ -55,7 +55,7 @@ pub async fn create_hospital(
     .bind(&payload.phone_number)
     .bind(VerificationStatus::Pending)
     .bind(RegistrationStep::ProfileSetup)
-    .fetch_one(&pool)
+    .fetch_one(&state.pool)
     .await?;
 
     Ok((StatusCode::CREATED, Json(HospitalResponse::from(hospital))))
@@ -63,7 +63,7 @@ pub async fn create_hospital(
 
 /// GET /api/v1/hospitals/:id
 pub async fn get_hospital(
-    State(pool): State<PgPool>,
+    State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<HospitalResponse>> {
     let hospital: Option<Hospital> = sqlx::query_as(
@@ -75,7 +75,7 @@ pub async fn get_hospital(
         "#,
     )
     .bind(id)
-    .fetch_optional(&pool)
+    .fetch_optional(&state.pool)
     .await?;
 
     let hospital = hospital.ok_or_else(|| AppError::NotFound(format!("Hospital {} not found", id)))?;
@@ -84,7 +84,7 @@ pub async fn get_hospital(
 
 /// PATCH /api/v1/hospitals/:id
 pub async fn update_hospital(
-    State(pool): State<PgPool>,
+    State(state): State<AppState>,
     Path(id): Path<Uuid>,
     Json(payload): Json<UpdateHospitalRequest>,
 ) -> AppResult<Json<HospitalResponse>> {
@@ -111,7 +111,7 @@ pub async fn update_hospital(
     .bind(&payload.address)
     .bind(&payload.phone_number)
     .bind(&payload.logo_url)
-    .fetch_optional(&pool)
+    .fetch_optional(&state.pool)
     .await?;
 
     let hospital = hospital.ok_or_else(|| AppError::NotFound(format!("Hospital {} not found", id)))?;
@@ -121,7 +121,7 @@ pub async fn update_hospital(
 /// PATCH /api/v1/hospitals/:id/advance-step
 /// Advance the hospital's registration step (Setup → Legal → Done).
 pub async fn advance_registration_step(
-    State(pool): State<PgPool>,
+    State(state): State<AppState>,
     Path(id): Path<Uuid>,
 ) -> AppResult<Json<HospitalResponse>> {
     // Fetch current step
@@ -129,7 +129,7 @@ pub async fn advance_registration_step(
         "SELECT registration_step FROM hospitals WHERE id = $1",
     )
     .bind(id)
-    .fetch_optional(&pool)
+    .fetch_optional(&state.pool)
     .await?;
 
     let (current_step,) = row.ok_or_else(|| AppError::NotFound(format!("Hospital {} not found", id)))?;
@@ -154,7 +154,7 @@ pub async fn advance_registration_step(
     )
     .bind(id)
     .bind(next_step)
-    .fetch_one(&pool)
+    .fetch_one(&state.pool)
     .await?;
 
     Ok(Json(HospitalResponse::from(hospital)))
@@ -163,7 +163,7 @@ pub async fn advance_registration_step(
 /// GET /api/v1/hospitals
 /// List all hospitals (admin use).
 pub async fn list_hospitals(
-    State(pool): State<PgPool>,
+    State(state): State<AppState>,
 ) -> AppResult<Json<Vec<HospitalResponse>>> {
     let hospitals: Vec<Hospital> = sqlx::query_as(
         r#"
@@ -173,7 +173,7 @@ pub async fn list_hospitals(
         ORDER BY created_at DESC
         "#,
     )
-    .fetch_all(&pool)
+    .fetch_all(&state.pool)
     .await?;
 
     Ok(Json(hospitals.into_iter().map(HospitalResponse::from).collect()))

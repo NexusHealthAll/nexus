@@ -43,6 +43,16 @@ pub struct Hospital {
     pub phone_number: String,
     pub verification_status: VerificationStatus,
     pub registration_step: RegistrationStep,
+    /// Admin registration status for approval workflow
+    pub admin_registration_status: Option<crate::models::registration::RegistrationStatus>,
+    /// System admin who approved the hospital registration
+    pub approved_by: Option<Uuid>,
+    /// Timestamp when hospital was approved by system admin
+    pub approved_at: Option<DateTime<Utc>>,
+    /// Reason for rejection if status is rejected
+    pub rejection_reason: Option<String>,
+    /// User ID of the hospital admin who initiated registration
+    pub admin_user_id: Option<Uuid>,
     /// Timestamp when documents were submitted for compliance review (Step 3).
     /// Used to track the 24-48 business hour verification window.
     pub legal_submitted_at: Option<DateTime<Utc>>,
@@ -103,6 +113,10 @@ pub struct HospitalResponse {
     pub phone_number: String,
     pub verification_status: VerificationStatus,
     pub registration_step: RegistrationStep,
+    pub admin_registration_status: Option<crate::models::registration::RegistrationStatus>,
+    pub approved_by: Option<Uuid>,
+    pub approved_at: Option<DateTime<Utc>>,
+    pub rejection_reason: Option<String>,
     pub legal_submitted_at: Option<DateTime<Utc>>,
     pub setup_progress_percent: i16,
     pub logo_url: Option<String>,
@@ -121,6 +135,10 @@ impl From<Hospital> for HospitalResponse {
             phone_number: h.phone_number,
             verification_status: h.verification_status,
             registration_step: h.registration_step,
+            admin_registration_status: h.admin_registration_status,
+            approved_by: h.approved_by,
+            approved_at: h.approved_at,
+            rejection_reason: h.rejection_reason,
             legal_submitted_at: h.legal_submitted_at,
             setup_progress_percent: h.setup_progress_percent,
             logo_url: h.logo_url,

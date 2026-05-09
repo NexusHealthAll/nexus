@@ -3,6 +3,45 @@ use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 use validator::Validate;
+use utoipa::ToSchema;
+
+// ---------------------------------------------------------------------------
+// Registration Status Enum (for hospital admin registration workflow)
+// ---------------------------------------------------------------------------
+
+/// Registration status for hospital admin registration workflow (AC-01 to AC-05)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ToSchema)]
+#[sqlx(type_name = "registration_status", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum RegistrationStatus {
+    Pending,
+    Approved,
+    Rejected,
+}
+
+// ---------------------------------------------------------------------------
+// Audit Event Types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "audit_event_type", rename_all = "snake_case")]
+#[serde(rename_all = "snake_case")]
+pub enum AuditEventType {
+    RegistrationCreated,
+    StatusChanged,
+    DocumentUploaded,
+    PaymentMethodAdded,
+    LocationUpdated,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(type_name = "actor_type", rename_all = "lowercase")]
+#[serde(rename_all = "lowercase")]
+pub enum ActorType {
+    User,
+    Admin,
+    System,
+}
 
 // ---------------------------------------------------------------------------
 // Enums

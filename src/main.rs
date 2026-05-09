@@ -4,14 +4,8 @@ use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-mod config;
-mod db;
-mod errors;
-mod models;
-mod routes;
-mod handlers;
-
-use config::AppConfig;
+use nexuscare_backend::utils::AppConfig;
+use nexuscare_backend::routes;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

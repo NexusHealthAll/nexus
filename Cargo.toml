@@ -3,6 +3,13 @@ name = "nexuscare_backend"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "nexuscare_backend"
+path = "src/main.rs"
+
 [dependencies]
 # Web framework
 axum = { version = "0.7.9", features = ["macros"] }
@@ -21,6 +28,7 @@ serde_json = { version = "1.0.140" }
 
 # Validation
 validator = { version = "0.19.0", features = ["derive"] }
+regex = { version = "1.11.1" }
 
 # UUIDs
 uuid = { version = "1.23.0", features = ["v4", "serde"] }
@@ -42,6 +50,11 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 
 # Password hashing
 argon2 = { version = "0.5.3" }
+bcrypt = { version = "0.16.0" }
+
+# Encryption
+aes-gcm = { version = "0.10.3" }
+base64 = { version = "0.22.1" }
 
 # JWT
 jsonwebtoken = { version = "9.3.1" }
@@ -49,5 +62,13 @@ jsonwebtoken = { version = "9.3.1" }
 # HTTP client (for CAC verification calls)
 reqwest = { version = "0.12.15", features = ["json", "rustls-tls"], default-features = false }
 
+# API Documentation (Swagger/OpenAPI)
+utoipa = { version = "5.3.1", features = ["axum_extras", "chrono", "uuid"] }
+utoipa-swagger-ui = { version = "8.1.0", features = ["axum"] }
+utoipa-rapidoc = { version = "6.0.0", features = ["axum"] }
+utoipa-redoc = { version = "6.0.0", features = ["axum"] }
+hex = "0.4.3"
+
 [dev-dependencies]
 tokio-test = "0.4.4"
+proptest = "1.6.0"
