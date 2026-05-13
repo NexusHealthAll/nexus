@@ -173,9 +173,8 @@ pub fn create_router(pool: PgPool) -> Router {
         auth_service,
     };
 
-    Router::new()
-        // API Documentation (Swagger UI)
-        .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
+    // Create API routes
+    let api_router = Router::new()
         // Health
         .route("/health", get(health::health_check))
         .route("/health/db", get(health::db_health_check))
@@ -194,25 +193,25 @@ pub fn create_router(pool: PgPool) -> Router {
             post(registration::register_hospital),
         )
         .route(
-            "/api/v1/hospitals/:hospital_id/status",
+            "/api/v1/hospitals/{hospital_id}/status",
             get(registration::get_registration_status),
         )
         // Admin endpoints
         .route(
-            "/api/v1/admin/hospitals/:hospital_id/approve",
+            "/api/v1/admin/hospitals/{hospital_id}/approve",
             post(registration::approve_hospital),
         )
         .route(
-            "/api/v1/admin/hospitals/:hospital_id/reject",
+            "/api/v1/admin/hospitals/{hospital_id}/reject",
             post(registration::reject_hospital),
         )
         // Existing Hospitals endpoints
         .route("/api/v1/hospitals", get(hospitals::list_hospitals))
         .route("/api/v1/hospitals", post(hospitals::create_hospital))
-        .route("/api/v1/hospitals/:id", get(hospitals::get_hospital))
-        .route("/api/v1/hospitals/:id", patch(hospitals::update_hospital))
+        .route("/api/v1/hospitals/{id}", get(hospitals::get_hospital))
+        .route("/api/v1/hospitals/{id}", patch(hospitals::update_hospital))
         .route(
-            "/api/v1/hospitals/:id/advance-step",
+            "/api/v1/hospitals/{id}/advance-step",
             patch(hospitals::advance_registration_step),
         )
         // Clinician registration
@@ -225,14 +224,19 @@ pub fn create_router(pool: PgPool) -> Router {
             post(clinician_registration::verify_otp),
         )
         .route(
-            "/api/v1/clinicians/:clinician_id/profile",
+            "/api/v1/clinicians/{clinician_id}/profile",
             axum::routing::put(clinician_registration::complete_profile),
         )
         .route(
-            "/api/v1/clinicians/:clinician_id/bank-account",
+            "/api/v1/clinicians/{clinician_id}/bank-account",
             post(clinician_registration::add_bank_account),
         )
         .layer(TraceLayer::new_for_http())
         .layer(cors)
-        .with_state(state)
+        .with_state(state);
+
+    // Merge with Swagger UI
+    Router::new()
+        .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
+        .merge(api_router)
 }
