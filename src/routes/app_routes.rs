@@ -1,7 +1,11 @@
 use axum::{
+    middleware::from_fn,
     routing::{get, patch, post},
     Router,
 };
+
+use crate::middlewares::require_role;
+use crate::models::user::UserRole;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tower_http::{
@@ -339,34 +343,57 @@ pub fn create_router(
             "/api/v1/clinicians/{clinician_id}/bank-account",
             post(clinician_registration::add_bank_account),
         )
-        // Shifts
-        .route("/api/v1/shifts", post(shifts::create_shift))
-        .route("/api/v1/shifts", get(shifts::list_shifts))
-        .route("/api/v1/shifts/preview", post(shifts::preview_shift))
+        // Shifts — gated per FRS v2.0 §2.2 permission matrix.
+        //
+        // HospitalAdmin/SuperAdmin: create, list-all, preview, view applications,
+        //                           assign, cancel, reschedule.
+        // HealthWorker: express interest, apply.
+        // Anyone authenticated: view a single shift's details (worker discovery).
+        .route(
+            "/api/v1/shifts",
+            post(shifts::create_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
+            "/api/v1/shifts",
+            get(shifts::list_shifts)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
+            "/api/v1/shifts/preview",
+            post(shifts::preview_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
         .route("/api/v1/shifts/{shift_id}", get(shifts::get_shift))
         .route(
             "/api/v1/shifts/{shift_id}/interest",
-            post(shifts::express_interest),
+            post(shifts::express_interest)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
         )
         .route(
             "/api/v1/shifts/{shift_id}/apply",
-            post(shifts::apply_for_shift),
+            post(shifts::apply_for_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
         )
         .route(
             "/api/v1/shifts/{shift_id}/applications",
-            get(shifts::list_shift_applications),
+            get(shifts::list_shift_applications)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
         )
         .route(
             "/api/v1/shifts/{shift_id}/assign",
-            post(shifts::assign_shift),
+            post(shifts::assign_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
         )
         .route(
             "/api/v1/shifts/{shift_id}/cancel",
-            post(shifts::cancel_shift),
+            post(shifts::cancel_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
         )
         .route(
             "/api/v1/shifts/{shift_id}/reschedule",
-            post(shifts::reschedule_shift),
+            post(shifts::reschedule_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
         )
         .layer(TraceLayer::new_for_http())
         .layer(cors)

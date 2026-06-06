@@ -80,6 +80,25 @@ impl ShiftRepository {
         .await
     }
 
+    /// BR-F1-06: count shifts the hospital currently has in "active, unfilled" states.
+    /// Used to enforce the 10-shift cap before creating another one.
+    pub async fn count_active_unfilled_shifts(
+        &self,
+        hospital_id: Uuid,
+    ) -> Result<i64, sqlx::Error> {
+        sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT COUNT(*)
+            FROM shifts
+            WHERE hospital_id = $1
+              AND status IN ('open', 'upcoming')
+            "#,
+        )
+        .bind(hospital_id)
+        .fetch_one(&self.pool)
+        .await
+    }
+
     pub async fn create(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -101,13 +120,13 @@ impl ShiftRepository {
                 scheduled_start, duration_hours, scheduled_end,
                 pay_type, rate_kobo_per_hour, fixed_rate_kobo, stat_bonus_kobo,
                 effective_rate_kobo_per_hour, grand_total_kobo,
-                shift_label, notes, created_by, broadcast_consent_confirmed,
+                shift_label, job_description, notes, created_by, broadcast_consent_confirmed,
                 created_at, updated_at
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
                 $11, $12, $13, $14, $15, $16, $17, $18, $19,
-                $20, $21, $22, $23, NOW(), NOW()
+                $20, $21, $22, $23, $24, NOW(), NOW()
             )
             "#,
         )
@@ -131,6 +150,7 @@ impl ShiftRepository {
         .bind(effective_rate)
         .bind(grand_total)
         .bind(&request.shift_label)
+        .bind(&request.job_description)
         .bind(&request.notes)
         .bind(created_by)
         .bind(request.broadcast_consent_confirmed)
@@ -552,7 +572,8 @@ impl ShiftRepository {
         .await
     }
 
-    /// AC-04: Update virtual meeting link for virtual shifts
+    /// AC-04 / F1-F15: Store the auto-generated virtual consultation link
+    /// in the explicit `virtual_link` column on `shifts`.
     pub async fn update_virtual_link(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -562,8 +583,8 @@ impl ShiftRepository {
         sqlx::query(
             r#"
             UPDATE shifts
-            SET notes = COALESCE(notes || E'\n\n', '') || 'Virtual Meeting Link: ' || $2,
-                updated_at = NOW()
+            SET virtual_link = $2,
+                updated_at   = NOW()
             WHERE id = $1
             "#,
         )
@@ -571,6 +592,62 @@ impl ShiftRepository {
         .bind(virtual_link)
         .execute(&mut **tx)
         .await?;
+
+        Ok(())
+    }
+
+    /// F1-F12 / F1-F13 / F1-F14 — atomically persist the shift's
+    /// tasks (description items, category=task), equipment (category=equipment),
+    /// and requirements (qualifications) inside the create-shift transaction.
+    pub async fn insert_shift_description_and_requirements(
+        &self,
+        tx: &mut Transaction<'_, Postgres>,
+        shift_id: Uuid,
+        tasks: &[String],
+        equipment: &[String],
+        requirements: &[String],
+    ) -> Result<(), sqlx::Error> {
+        for (idx, label) in tasks.iter().enumerate() {
+            sqlx::query(
+                r#"
+                INSERT INTO shift_description_items (shift_id, category, label, sort_order)
+                VALUES ($1, 'task', $2, $3)
+                "#,
+            )
+            .bind(shift_id)
+            .bind(label)
+            .bind(idx as i16)
+            .execute(&mut **tx)
+            .await?;
+        }
+
+        for (idx, label) in equipment.iter().enumerate() {
+            sqlx::query(
+                r#"
+                INSERT INTO shift_description_items (shift_id, category, label, sort_order)
+                VALUES ($1, 'equipment', $2, $3)
+                "#,
+            )
+            .bind(shift_id)
+            .bind(label)
+            .bind(idx as i16)
+            .execute(&mut **tx)
+            .await?;
+        }
+
+        for (idx, qualification) in requirements.iter().enumerate() {
+            sqlx::query(
+                r#"
+                INSERT INTO shift_requirements (shift_id, qualification, sort_order)
+                VALUES ($1, $2, $3)
+                "#,
+            )
+            .bind(shift_id)
+            .bind(qualification)
+            .bind(idx as i16)
+            .execute(&mut **tx)
+            .await?;
+        }
 
         Ok(())
     }

@@ -1,5 +1,6 @@
 pub mod utils;
 pub mod models;
+pub mod middlewares;
 pub mod routes;
 pub mod handlers;
 pub mod repositories;
