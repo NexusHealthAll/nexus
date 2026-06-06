@@ -1,7 +1,12 @@
 pub mod hospitals;
 pub mod auth;
 pub mod health;
+pub mod ml_health;
 pub mod registration;
 pub mod clinician_registration;
 pub mod shifts;
 pub mod admin;
+pub mod pipeline;
+pub mod pipeline_gateway;
+pub mod patients;
+pub mod feedback;
