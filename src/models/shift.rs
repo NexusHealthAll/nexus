@@ -819,6 +819,47 @@ pub struct ClockinRequest {
     pub longitude: Option<f64>,
 }
 
+// ---------------------------------------------------------------------------
+// Tier 3.5 — GPS-fallback clock-in approval (FRS §3.6.6)
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /api/v1/shifts/{shift_id}/clockin/approval-request`.
+/// Worker submits a photo of the hospital entrance plus device GPS when their
+/// GPS fix is too imprecise to satisfy the geofence.
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+pub struct ClockinApprovalRequest {
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    /// Base64-encoded image bytes. Production should switch to a presigned
+    /// upload URL.
+    #[validate(length(min = 1, max = 8_000_000))]
+    pub photo_base64: String,
+    /// Optional MIME type (e.g. `"image/jpeg"`).
+    #[validate(length(max = 50))]
+    pub photo_mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema, FromRow)]
+pub struct ClockinApprovalRecord {
+    pub id: Uuid,
+    pub shift_id: Uuid,
+    pub clinician_id: Uuid,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub status: String,
+    pub submitted_at: DateTime<Utc>,
+    pub decided_at: Option<DateTime<Utc>>,
+    pub decision_notes: Option<String>,
+}
+
+/// Request body for `POST /api/v1/clockin-approvals/{id}/deny` (notes optional
+/// on both approve and deny so we share a struct).
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+pub struct ClockinApprovalDecisionRequest {
+    #[validate(length(max = 1000))]
+    pub notes: Option<String>,
+}
+
 /// Response body for `POST /api/v1/shifts/{shift_id}/clockin`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ClockinResponse {

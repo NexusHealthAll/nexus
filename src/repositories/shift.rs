@@ -25,6 +25,19 @@ pub struct InterestedClinicianRow {
     pub clinician_lng: Option<f64>,
 }
 
+/// Raw row backing the Tier 3.2 eligibility query. The service decides
+/// whether the clinician is within the broadcast radius (in-person shifts only)
+/// before contacting them.
+#[derive(Debug, Clone, FromRow)]
+pub struct EligibleClinicianRow {
+    pub clinician_id: Uuid,
+    pub user_id: Uuid,
+    pub first_name: String,
+    pub email: String,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+}
+
 /// Raw row backing the Tier 2.1 "Shifts Near You" query. Distance and final
 /// sort happen in the service layer.
 #[derive(Debug, Clone, FromRow)]
@@ -370,6 +383,26 @@ impl ShiftRepository {
         .fetch_one(&self.pool)
         .await?;
         Ok(id)
+    }
+
+    /// Tier 3.2 — broadcast radius (km) for this hospital's primary location
+    /// (default 5km per the schema).
+    pub async fn get_broadcast_radius_km(
+        &self,
+        hospital_id: Uuid,
+    ) -> Result<Option<f64>, sqlx::Error> {
+        sqlx::query_scalar::<_, f64>(
+            r#"
+            SELECT shift_broadcast_radius_km
+            FROM hospital_locations
+            WHERE hospital_id = $1
+            ORDER BY created_at ASC
+            LIMIT 1
+            "#,
+        )
+        .bind(hospital_id)
+        .fetch_optional(&self.pool)
+        .await
     }
 
     /// Tier 2.5 — clock_in_radius_meters for this hospital's primary location
@@ -958,6 +991,374 @@ impl ShiftRepository {
         )
         .bind(shift_id)
         .bind(clinician_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Tier 3.2 — Find clinicians eligible to receive a broadcast for the
+    /// given shift. SQL filters:
+    ///   * `clinicians.availability = 'available_now'` and `is_active = TRUE`
+    ///     and `is_verified = TRUE`
+    ///   * specialty ∈ `allowed_specialties` (caller-derived from the shift's
+    ///     `RoleCategory`)
+    ///   * not currently in an active (`in_progress`) shift
+    ///   * not blocked by the hospital — placeholder, no block table yet, so
+    ///     always true
+    /// The caller applies the haversine-distance check using each clinician's
+    /// last known location (in-person shifts only).
+    pub async fn find_eligible_clinicians(
+        &self,
+        allowed_specialties: &[crate::models::clinician::ClinicalSpecialty],
+    ) -> Result<Vec<EligibleClinicianRow>, sqlx::Error> {
+        sqlx::query_as::<_, EligibleClinicianRow>(
+            r#"
+            SELECT
+                c.id           AS clinician_id,
+                c.user_id,
+                c.first_name,
+                u.email,
+                cl.latitude,
+                cl.longitude
+            FROM clinicians c
+            JOIN users u                    ON u.id = c.user_id
+            LEFT JOIN clinician_locations cl ON cl.clinician_id = c.id
+            WHERE c.availability = 'available_now'
+              AND c.is_active   = TRUE
+              AND c.is_verified = TRUE
+              AND c.specialty   = ANY($1::clinical_specialty[])
+              AND NOT EXISTS (
+                  SELECT 1 FROM shifts s
+                  WHERE s.assigned_clinician_id = c.id
+                    AND s.status = 'in_progress'
+              )
+            "#,
+        )
+        .bind(allowed_specialties)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Tier 3.1 — Insert a `shift_broadcast_records` audit row. `broadcast_by`
+    /// is `None` for cadence-driven re-broadcasts (no user context).
+    pub async fn record_broadcast(
+        &self,
+        shift_id: Uuid,
+        broadcast_by: Option<Uuid>,
+        eligible_count: i32,
+        radius_km: f64,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            r#"
+            INSERT INTO shift_broadcast_records (
+                shift_id, broadcast_by, eligible_clinicians_count, broadcast_radius_km
+            )
+            VALUES ($1, $2, $3, $4)
+            "#,
+        )
+        .bind(shift_id)
+        .bind(broadcast_by)
+        .bind(eligible_count)
+        .bind(radius_km)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Tier 3.1 — Find open shifts that are due for re-broadcast per their
+    /// urgency cadence (BR-F1-11..14).
+    ///   * STAT every 15 min
+    ///   * Urgent every 30 min
+    ///   * Normal / Scheduled: broadcast once, no re-broadcast
+    /// "Last broadcast" is taken from the most recent `shift_broadcast_records`
+    /// row for the shift; if there is none, the shift is treated as
+    /// "ready now" (covers the first-broadcast case too).
+    pub async fn find_shifts_due_for_rebroadcast(
+        &self,
+    ) -> Result<Vec<Shift>, sqlx::Error> {
+        sqlx::query_as::<_, Shift>(
+            r#"
+            SELECT s.id, s.hospital_id, s.role_category, s.role_title, s.specialty,
+                   s.department, s.shift_type, s.status, s.priority, s.urgency_bonus_pct,
+                   s.scheduled_start, s.duration_hours, s.scheduled_end,
+                   s.assigned_clinician_id, s.rate_kobo_per_hour, s.fixed_rate_kobo,
+                   s.pay_type, s.stat_bonus_kobo, s.effective_rate_kobo_per_hour,
+                   s.grand_total_kobo, s.shift_label, s.job_description,
+                   s.draft_quality_score, s.notes, s.created_by,
+                   s.broadcast_consent_confirmed, s.matched_clinicians_at_publish,
+                   s.broadcast_at, s.billing_triggered_at, s.created_at, s.updated_at,
+                   h.name AS hospital_name
+            FROM shifts s
+            JOIN hospitals h ON s.hospital_id = h.id
+            WHERE s.status = 'open'
+              AND s.priority IN ('stat', 'urgent')
+              AND (
+                  SELECT COALESCE(MAX(r.broadcast_at), 'epoch')
+                  FROM shift_broadcast_records r
+                  WHERE r.shift_id = s.id
+              ) + (
+                  CASE s.priority
+                      WHEN 'stat'   THEN INTERVAL '15 minutes'
+                      WHEN 'urgent' THEN INTERVAL '30 minutes'
+                  END
+              ) <= NOW()
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Tier 3.3 — Sweep step: flip every offered assignment whose
+    /// `expires_at` has passed to `expired`, set `responded_at`, and
+    /// return the rows so the caller can notify each hospital.
+    ///
+    /// Returns `(assignment_id, shift_id, hospital_id, role_title)` tuples.
+    pub async fn expire_due_offers(
+        &self,
+    ) -> Result<Vec<(Uuid, Uuid, Uuid, String)>, sqlx::Error> {
+        sqlx::query_as::<_, (Uuid, Uuid, Uuid, String)>(
+            r#"
+            WITH expired AS (
+                UPDATE shift_assignments a
+                   SET status       = 'expired',
+                       responded_at = NOW(),
+                       updated_at   = NOW()
+                 WHERE status     = 'offered'
+                   AND expires_at < NOW()
+                RETURNING id, shift_id
+            )
+            SELECT e.id, e.shift_id, s.hospital_id, s.role_title
+            FROM expired e
+            JOIN shifts s ON s.id = e.shift_id
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Tier 3.4 — Sweep step: auto-approve handovers whose 48h window has
+    /// passed without hospital action and no revision request. Returns
+    /// `(handover_id, shift_id, clinician_id, hospital_id, role_title)` for
+    /// each auto-approved handover so the caller can notify the parties.
+    pub async fn auto_approve_due_handovers(
+        &self,
+    ) -> Result<Vec<(Uuid, Uuid, Uuid, Uuid, String)>, sqlx::Error> {
+        sqlx::query_as::<_, (Uuid, Uuid, Uuid, Uuid, String)>(
+            r#"
+            WITH approved AS (
+                UPDATE shift_handovers h
+                   SET hospital_approved_at = NOW(),
+                       updated_at           = NOW()
+                 WHERE h.hospital_approved_at IS NULL
+                   AND h.revision_requested_at IS NULL
+                   AND h.auto_approve_after < NOW()
+                RETURNING id, shift_id
+            )
+            SELECT a.id, a.shift_id, s.assigned_clinician_id, s.hospital_id, s.role_title
+            FROM approved a
+            JOIN shifts s ON s.id = a.shift_id
+            WHERE s.assigned_clinician_id IS NOT NULL
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Tier 3.6 — Recompute and cache `clinicians.acceptance_rate_pct` from
+    /// the current `shift_assignments` history. Called after every offer
+    /// lifecycle event (accept / decline / expiry).
+    pub async fn recompute_clinician_acceptance_rate(
+        &self,
+        clinician_id: Uuid,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            r#"
+            UPDATE clinicians c
+               SET acceptance_rate_pct = (
+                       SELECT CASE
+                                  WHEN COUNT(*) = 0 THEN NULL
+                                  ELSE (
+                                      COUNT(*) FILTER (WHERE a.status = 'accepted')::REAL
+                                      / COUNT(*)::REAL
+                                  ) * 100.0
+                              END
+                       FROM shift_assignments a
+                       WHERE a.clinician_id = c.id
+                         AND a.status IN ('accepted', 'declined', 'expired')
+                   ),
+                   updated_at = NOW()
+             WHERE c.id = $1
+            "#,
+        )
+        .bind(clinician_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Tier 3.6 — Recompute acceptance rates for every clinician whose
+    /// assignment lifecycle changed in the current sweep. Used by the
+    /// offer-expiry scheduler so caches stay in sync without per-row
+    /// callbacks.
+    pub async fn recompute_acceptance_rates_bulk(
+        &self,
+        clinician_ids: &[Uuid],
+    ) -> Result<(), sqlx::Error> {
+        if clinician_ids.is_empty() {
+            return Ok(());
+        }
+        sqlx::query(
+            r#"
+            UPDATE clinicians c
+               SET acceptance_rate_pct = (
+                       SELECT CASE
+                                  WHEN COUNT(*) = 0 THEN NULL
+                                  ELSE (
+                                      COUNT(*) FILTER (WHERE a.status = 'accepted')::REAL
+                                      / COUNT(*)::REAL
+                                  ) * 100.0
+                              END
+                       FROM shift_assignments a
+                       WHERE a.clinician_id = c.id
+                         AND a.status IN ('accepted', 'declined', 'expired')
+                   ),
+                   updated_at = NOW()
+             WHERE c.id = ANY($1::uuid[])
+            "#,
+        )
+        .bind(clinician_ids)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Tier 3.6 — Free-text qualifications attached to a clinician profile.
+    pub async fn list_clinician_qualifications(
+        &self,
+        clinician_id: Uuid,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT qualification
+            FROM clinician_qualifications
+            WHERE clinician_id = $1
+            ORDER BY created_at ASC
+            "#,
+        )
+        .bind(clinician_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Tier 3.6 — Required qualifications for a shift (free-text tags from
+    /// `shift_requirements`).
+    pub async fn list_shift_requirements(
+        &self,
+        shift_id: Uuid,
+    ) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT qualification
+            FROM shift_requirements
+            WHERE shift_id = $1
+            ORDER BY sort_order ASC, created_at ASC
+            "#,
+        )
+        .bind(shift_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Tier 3.5 — Insert a clock-in approval request. Returns the record id.
+    /// Returns a unique-violation error if the worker already has a pending
+    /// or decided request for this shift (one per (shift, clinician)).
+    pub async fn create_clockin_approval_request(
+        &self,
+        shift_id: Uuid,
+        clinician_id: Uuid,
+        latitude: Option<f64>,
+        longitude: Option<f64>,
+        photo_bytes: &[u8],
+        photo_mime_type: Option<&str>,
+    ) -> Result<Uuid, sqlx::Error> {
+        sqlx::query_scalar::<_, Uuid>(
+            r#"
+            INSERT INTO clockin_approval_requests
+                (shift_id, clinician_id, latitude, longitude, photo_bytes, photo_mime_type)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id
+            "#,
+        )
+        .bind(shift_id)
+        .bind(clinician_id)
+        .bind(latitude)
+        .bind(longitude)
+        .bind(photo_bytes)
+        .bind(photo_mime_type)
+        .fetch_one(&self.pool)
+        .await
+    }
+
+    pub async fn get_clockin_approval_request(
+        &self,
+        id: Uuid,
+    ) -> Result<Option<crate::models::shift::ClockinApprovalRecord>, sqlx::Error> {
+        sqlx::query_as::<_, crate::models::shift::ClockinApprovalRecord>(
+            r#"
+            SELECT id, shift_id, clinician_id, latitude, longitude,
+                   status::text AS status, submitted_at, decided_at, decision_notes
+            FROM clockin_approval_requests
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
+    /// Whether the (shift, clinician) pair has an approved clock-in
+    /// fallback request. Used by `clock_in` to allow `Manual` method.
+    pub async fn has_approved_clockin_request(
+        &self,
+        shift_id: Uuid,
+        clinician_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        let count: i64 = sqlx::query_scalar(
+            r#"
+            SELECT COUNT(*)
+            FROM clockin_approval_requests
+            WHERE shift_id = $1 AND clinician_id = $2 AND status = 'approved'
+            "#,
+        )
+        .bind(shift_id)
+        .bind(clinician_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(count > 0)
+    }
+
+    pub async fn decide_clockin_approval_request(
+        &self,
+        id: Uuid,
+        decided_by: Uuid,
+        approve: bool,
+        notes: Option<&str>,
+    ) -> Result<(), sqlx::Error> {
+        sqlx::query(
+            r#"
+            UPDATE clockin_approval_requests
+               SET status        = CASE WHEN $2 THEN 'approved' ELSE 'denied' END::clockin_approval_status,
+                   decided_at    = NOW(),
+                   decided_by    = $3,
+                   decision_notes = $4,
+                   updated_at    = NOW()
+             WHERE id = $1 AND status = 'pending'
+            "#,
+        )
+        .bind(id)
+        .bind(approve)
+        .bind(decided_by)
+        .bind(notes)
         .execute(&self.pool)
         .await?;
         Ok(())

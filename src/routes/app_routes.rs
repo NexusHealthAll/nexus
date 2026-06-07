@@ -102,6 +102,9 @@ pub struct AppState {
         crate::handlers::shifts::bookmark_shift,
         crate::handlers::shifts::unbookmark_shift,
         crate::handlers::shifts::dismiss_shift,
+        crate::handlers::shifts::request_clockin_approval,
+        crate::handlers::shifts::approve_clockin_request,
+        crate::handlers::shifts::deny_clockin_request,
         crate::handlers::shifts::assign_shift,
         crate::handlers::shifts::cancel_shift,
         crate::handlers::shifts::reschedule_shift,
@@ -144,6 +147,9 @@ pub struct AppState {
             crate::models::shift::RatingResponse,
             crate::models::shift::NearbyShiftCard,
             crate::models::shift::MyApplicationEntry,
+            crate::models::shift::ClockinApprovalRequest,
+            crate::models::shift::ClockinApprovalDecisionRequest,
+            crate::models::shift::ClockinApprovalRecord,
             // Admin
             crate::handlers::admin::ClinicianListResponse,
             crate::handlers::admin::PaginationMetadata,
@@ -223,7 +229,7 @@ pub fn create_router(
     pool: PgPool,
     notification_service: Arc<NotificationService>,
     email_outbox_service: Arc<EmailOutboxService>,
-) -> Router {
+) -> (Router, AppState) {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -498,6 +504,21 @@ pub fn create_router(
                 .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
         )
         .route(
+            "/api/v1/shifts/{shift_id}/clockin/approval-request",
+            post(shifts::request_clockin_approval)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/clockin-approvals/{request_id}/approve",
+            post(shifts::approve_clockin_request)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
+            "/api/v1/clockin-approvals/{request_id}/deny",
+            post(shifts::deny_clockin_request)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
             "/api/v1/shifts/{shift_id}/assign",
             post(shifts::assign_shift)
                 .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
@@ -514,10 +535,12 @@ pub fn create_router(
         )
         .layer(TraceLayer::new_for_http())
         .layer(cors)
-        .with_state(state);
+        .with_state(state.clone());
 
     // Merge with Swagger UI
-    Router::new()
+    let router = Router::new()
         .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
-        .merge(api_router)
+        .merge(api_router);
+
+    (router, state)
 }

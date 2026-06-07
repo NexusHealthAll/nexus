@@ -100,6 +100,15 @@ pub enum ShiftServiceError {
 
     #[error("Rating edit window (48 hours) has closed")]
     RatingEditWindowClosed,
+
+    #[error("Clock-in approval request already exists for this shift")]
+    DuplicateClockinApproval,
+
+    #[error("Clock-in approval request not found")]
+    ClockinApprovalNotFound,
+
+    #[error("Manual clock-in requires an approved GPS-fallback request")]
+    ManualClockinNotApproved,
 }
 
 pub struct ShiftService {
@@ -187,11 +196,29 @@ impl ShiftService {
             self.shift_repo.update_virtual_link(&mut tx, shift.id, &virtual_link).await?;
         }
 
-        // Broadcast shift (calculate matching clinicians)
+        // Broadcast shift (calculate matching clinicians).
         let matched_count = self.calculate_matched_clinicians(&shift).await;
         self.shift_repo.broadcast_shift(&mut tx, shift.id, matched_count).await?;
 
         tx.commit().await?;
+
+        // Tier 3.1 — record the initial broadcast in the audit table so the
+        // cadence scheduler has a "last broadcast" anchor (post-commit so the
+        // row is visible to other connections immediately).
+        let radius_km = self
+            .shift_repo
+            .get_broadcast_radius_km(hospital_id)
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(5.0);
+        if let Err(e) = self
+            .shift_repo
+            .record_broadcast(shift.id, Some(created_by), matched_count, radius_km)
+            .await
+        {
+            eprintln!("Warning: Failed to record initial broadcast: {e}");
+        }
 
         // AC-07: Send push notifications to eligible workers
         self.broadcast_shift_notifications(shift.id, hospital_id, matched_count).await?;
@@ -457,63 +484,79 @@ impl ShiftService {
             .list_interested_with_stats(shift_id)
             .await?;
 
-        let mut ranked: Vec<RankedInterestedClinician> = rows
-            .into_iter()
-            .map(|r| {
-                let distance_km = match (hospital_coords, r.clinician_lat, r.clinician_lng) {
-                    (Some((h_lat, h_lng)), Some(c_lat), Some(c_lng)) => {
-                        Some(crate::utils::geo::haversine_km(h_lat, h_lng, c_lat, c_lng))
-                    }
-                    _ => None,
-                };
+        // Tier 3.6 — fetch the shift's required qualifications once. If the
+        // shift has none, every clinician trivially matches.
+        let required = self.shift_repo.list_shift_requirements(shift_id).await?;
+        let required_lower: Vec<String> =
+            required.iter().map(|s| s.trim().to_lowercase()).collect();
 
-                // §3.4.3 component scoring.
-                let distance_score = match distance_km {
-                    Some(d) if d <= 2.0 => 100.0,
-                    Some(d) if d <= 5.0 => 70.0,
-                    Some(_) => 0.0,
-                    None => 0.0,
-                };
-                let rating_score = ((r.rating as f64).clamp(0.0, 5.0) / 5.0) * 100.0;
-                let experience_score =
-                    ((r.completed_shifts as f64) / 100.0).min(1.0) * 100.0;
-
-                let total_offers = r.accepts + r.declines + r.expires;
-                let acceptance_rate_pct = if total_offers == 0 {
-                    None
-                } else {
-                    Some((r.accepts as f64 / total_offers as f64) * 100.0)
-                };
-                let acceptance_score = acceptance_rate_pct.unwrap_or(0.0);
-
-                // Qualifications matching is not yet implemented (no clinician
-                // qualifications store). Default to full credit (100), so we
-                // don't unfairly penalise clinicians for our missing data.
-                let quals_match = true;
-                let quals_score = 100.0;
-
-                let score = distance_score * 0.30
-                    + rating_score * 0.25
-                    + experience_score * 0.20
-                    + acceptance_score * 0.15
-                    + quals_score * 0.10;
-
-                // BR-F1-19/20: mask to last name until selected.
-                let display_name = r.last_name.trim().to_string();
-
-                RankedInterestedClinician {
-                    clinician_id: r.clinician_id,
-                    display_name,
-                    distance_km,
-                    rating: r.rating,
-                    rating_count: r.rating_count,
-                    completed_shifts: r.completed_shifts,
-                    acceptance_rate_pct,
-                    quals_match,
-                    score,
+        let mut ranked: Vec<RankedInterestedClinician> = Vec::with_capacity(rows.len());
+        for r in rows {
+            let distance_km = match (hospital_coords, r.clinician_lat, r.clinician_lng) {
+                (Some((h_lat, h_lng)), Some(c_lat), Some(c_lng)) => {
+                    Some(crate::utils::geo::haversine_km(h_lat, h_lng, c_lat, c_lng))
                 }
-            })
-            .collect();
+                _ => None,
+            };
+
+            // §3.4.3 component scoring.
+            let distance_score = match distance_km {
+                Some(d) if d <= 2.0 => 100.0,
+                Some(d) if d <= 5.0 => 70.0,
+                Some(_) => 0.0,
+                None => 0.0,
+            };
+            let rating_score = ((r.rating as f64).clamp(0.0, 5.0) / 5.0) * 100.0;
+            let experience_score = ((r.completed_shifts as f64) / 100.0).min(1.0) * 100.0;
+
+            let total_offers = r.accepts + r.declines + r.expires;
+            let acceptance_rate_pct = if total_offers == 0 {
+                None
+            } else {
+                Some((r.accepts as f64 / total_offers as f64) * 100.0)
+            };
+            let acceptance_score = acceptance_rate_pct.unwrap_or(0.0);
+
+            // Tier 3.6 — Real qualifications match. 100 if the clinician
+            // has every required qualification (case-insensitive substring
+            // match), 0 otherwise. A shift with no requirements: trivial 100.
+            let quals_match = if required_lower.is_empty() {
+                true
+            } else {
+                let owned = self
+                    .shift_repo
+                    .list_clinician_qualifications(r.clinician_id)
+                    .await
+                    .unwrap_or_default();
+                let owned_lower: Vec<String> =
+                    owned.iter().map(|s| s.trim().to_lowercase()).collect();
+                required_lower
+                    .iter()
+                    .all(|req| owned_lower.iter().any(|q| q.contains(req)))
+            };
+            let quals_score = if quals_match { 100.0 } else { 0.0 };
+
+            let score = distance_score * 0.30
+                + rating_score * 0.25
+                + experience_score * 0.20
+                + acceptance_score * 0.15
+                + quals_score * 0.10;
+
+            // BR-F1-19/20: mask to last name until selected.
+            let display_name = r.last_name.trim().to_string();
+
+            ranked.push(RankedInterestedClinician {
+                clinician_id: r.clinician_id,
+                display_name,
+                distance_km,
+                rating: r.rating,
+                rating_count: r.rating_count,
+                completed_shifts: r.completed_shifts,
+                acceptance_rate_pct,
+                quals_match,
+                score,
+            });
+        }
 
         // Highest score first; stable tiebreaker by clinician_id keeps results
         // deterministic across requests.
@@ -680,6 +723,16 @@ impl ShiftService {
             .await?;
         tx.commit().await?;
 
+        // Tier 3.6 — refresh the cached acceptance rate after the lifecycle
+        // event so the next ranking call sees the new value.
+        if let Err(e) = self
+            .shift_repo
+            .recompute_clinician_acceptance_rate(clinician_id)
+            .await
+        {
+            eprintln!("Warning: acceptance-rate recompute failed for {clinician_id}: {e}");
+        }
+
         // Best-effort confirmation emails (one to hospital, one to clinician).
         if let Ok(Some((hospital_name, hospital_email))) =
             self.shift_repo.get_hospital_contact(shift.hospital_id).await
@@ -742,6 +795,15 @@ impl ShiftService {
         self.shift_repo
             .decline_offer(assignment_id, reason.as_deref())
             .await?;
+
+        // Tier 3.6 — refresh the cached acceptance rate.
+        if let Err(e) = self
+            .shift_repo
+            .recompute_clinician_acceptance_rate(clinician_id)
+            .await
+        {
+            eprintln!("Warning: acceptance-rate recompute failed for {clinician_id}: {e}");
+        }
 
         // Best-effort notification to the hospital admin.
         if let Ok(Some(shift)) = self.shift_repo.get_by_id(shift_id).await {
@@ -879,9 +941,21 @@ impl ShiftService {
                 }
                 (None, None, None)
             }
-            ClockinMethod::QrCode | ClockinMethod::Manual => {
+            ClockinMethod::Manual => {
+                // Tier 3.5 — Manual clock-in is only permitted when there's
+                // an approved GPS-fallback request for this (shift, clinician).
+                if !self
+                    .shift_repo
+                    .has_approved_clockin_request(shift_id, clinician_id)
+                    .await?
+                {
+                    return Err(ShiftServiceError::ManualClockinNotApproved);
+                }
+                (None, request.latitude, request.longitude)
+            }
+            ClockinMethod::QrCode => {
                 return Err(ShiftServiceError::ValidationError(
-                    "Only 'gps' or 'virtual' clock-in is supported via this endpoint".to_string(),
+                    "QR-code clock-in is not yet supported via this endpoint".to_string(),
                 ));
             }
         };
@@ -1783,39 +1857,414 @@ impl ShiftService {
     }
 
     /// AC-05: Calculate matched clinicians based on shift type and location
-    async fn calculate_matched_clinicians(&self, shift: &Shift) -> i32 {
-        // AC-05: For in-person shifts, apply 5km distance restriction
-        // AC-04: For virtual shifts, no distance restriction
-        let _distance_km = match shift.shift_type {
-            ShiftType::InPerson => Some(5.0),
-            ShiftType::Virtual => None,
+    /// Tier 3.4 — One iteration of the handover auto-approval sweep
+    /// (BR-F1-39). Approves handovers whose 48h window has lapsed with no
+    /// hospital action, then notifies the assigned clinician.
+    pub async fn auto_approve_due_handovers(&self) -> Result<usize, ShiftServiceError> {
+        let approved = self.shift_repo.auto_approve_due_handovers().await?;
+        let count = approved.len();
+
+        for (handover_id, shift_id, clinician_id, _hospital_id, role_title) in approved {
+            if let Ok(Some((first_name, _last_name, clinician_email))) =
+                self.shift_repo.get_clinician_contact(clinician_id).await
+            {
+                let content = email_templates::handover_auto_approved(&first_name, &role_title);
+                if let Err(e) = self.email_outbox.enqueue_email(&clinician_email, &content).await {
+                    eprintln!("Warning: Failed to queue handover auto-approval email: {e}");
+                }
+            }
+            tracing::info!(
+                "Handover {} for shift {} auto-approved",
+                handover_id,
+                shift_id
+            );
+        }
+        Ok(count)
+    }
+
+    /// Tier 3.3 — One iteration of the offer-expiry sweep. Flips every
+    /// offered assignment past its 30-min `expires_at` to `expired` and
+    /// notifies the hospital so it can pick the next ranked candidate.
+    /// Returns the number of offers expired this tick.
+    ///
+    /// Tier 3.6 — Also refreshes the acceptance-rate cache for every
+    /// affected clinician in one bulk write so subsequent ranking calls see
+    /// the new values.
+    pub async fn expire_due_offers(&self) -> Result<usize, ShiftServiceError> {
+        let expired = self.shift_repo.expire_due_offers().await?;
+        let count = expired.len();
+
+        // Collect affected clinician_ids so we can bulk-refresh their
+        // acceptance rates. The repo query returns one row per expired
+        // assignment; map shift_id → clinician via shift_assignments lookup.
+        let mut affected: Vec<Uuid> = Vec::new();
+
+        for (assignment_id, shift_id, hospital_id, role_title) in expired {
+            if let Ok(Some((_, hospital_email))) =
+                self.shift_repo.get_hospital_contact(hospital_id).await
+            {
+                let content = email_templates::shift_offer_expired(&role_title);
+                if let Err(e) = self.email_outbox.enqueue_email(&hospital_email, &content).await {
+                    eprintln!("Warning: Failed to queue offer-expiry email: {e}");
+                }
+            }
+
+            // Look up the clinician on this assignment for the cache refresh.
+            if let Ok(rows) = sqlx::query_scalar::<_, Uuid>(
+                "SELECT clinician_id FROM shift_assignments WHERE id = $1",
+            )
+            .bind(assignment_id)
+            .fetch_optional(&self.pool)
+            .await
+            {
+                if let Some(cid) = rows {
+                    affected.push(cid);
+                }
+            }
+
+            tracing::info!(
+                "Offer {} for shift {} expired (hospital {})",
+                assignment_id,
+                shift_id,
+                hospital_id
+            );
+        }
+
+        if !affected.is_empty() {
+            if let Err(e) = self
+                .shift_repo
+                .recompute_acceptance_rates_bulk(&affected)
+                .await
+            {
+                eprintln!("Warning: bulk acceptance-rate recompute failed: {e}");
+            }
+        }
+
+        Ok(count)
+    }
+
+    /// Tier 3.5 — Worker submits a GPS-fallback clock-in approval request
+    /// with a photo of the hospital entrance and the device-reported coords.
+    /// Notifies the hospital admin so they can approve or deny.
+    pub async fn request_clockin_approval(
+        &self,
+        shift_id: Uuid,
+        worker_user_id: Uuid,
+        request: crate::models::shift::ClockinApprovalRequest,
+    ) -> Result<Uuid, ShiftServiceError> {
+        use base64::Engine;
+        use validator::Validate;
+        request
+            .validate()
+            .map_err(|e| ShiftServiceError::ValidationError(e.to_string()))?;
+
+        let clinician_id = self
+            .shift_repo
+            .find_clinician_id_for_user(worker_user_id)
+            .await?
+            .ok_or(ShiftServiceError::NoClinicianProfile)?;
+
+        let shift = self
+            .shift_repo
+            .get_by_id(shift_id)
+            .await?
+            .ok_or(ShiftServiceError::NotFound(shift_id))?;
+
+        if shift.assigned_clinician_id != Some(clinician_id) {
+            return Err(ShiftServiceError::NotAuthorized);
+        }
+        if !matches!(shift.status, ShiftStatus::Assigned | ShiftStatus::Upcoming) {
+            return Err(ShiftServiceError::InvalidStatus(format!(
+                "Cannot request clock-in approval for a shift in status {:?}",
+                shift.status
+            )));
+        }
+
+        let photo_bytes = base64::engine::general_purpose::STANDARD
+            .decode(request.photo_base64.trim())
+            .map_err(|e| {
+                ShiftServiceError::ValidationError(format!("Invalid base64 photo: {e}"))
+            })?;
+        if photo_bytes.is_empty() {
+            return Err(ShiftServiceError::ValidationError(
+                "Photo cannot be empty".to_string(),
+            ));
+        }
+
+        let request_id = match self
+            .shift_repo
+            .create_clockin_approval_request(
+                shift_id,
+                clinician_id,
+                request.latitude,
+                request.longitude,
+                &photo_bytes,
+                request.photo_mime_type.as_deref(),
+            )
+            .await
+        {
+            Ok(id) => id,
+            Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                return Err(ShiftServiceError::DuplicateClockinApproval);
+            }
+            Err(e) => return Err(ShiftServiceError::DatabaseError(e)),
         };
 
-        // In production, this would query clinicians based on:
-        // - specialty matching shift.specialty
-        // - location within distance_km (for in-person)
-        // - availability matching shift.scheduled_start
-        // - verified status
-        
-        // Mock implementation
-        match shift.shift_type {
-            ShiftType::InPerson => 48, // Fewer matches due to distance restriction
-            ShiftType::Virtual => 85,  // More matches, no distance restriction
+        // Best-effort notify the hospital admin.
+        if let Ok(Some((_, hospital_email))) =
+            self.shift_repo.get_hospital_contact(shift.hospital_id).await
+        {
+            if let Ok(Some((first_name, last_name, _))) =
+                self.shift_repo.get_clinician_contact(clinician_id).await
+            {
+                let clinician_name = format!("{} {}", first_name, last_name).trim().to_string();
+                let content = email_templates::clockin_approval_requested(
+                    &clinician_name,
+                    &shift.role_title,
+                );
+                let _ = self.email_outbox.enqueue_email(&hospital_email, &content).await;
+            }
+        }
+
+        Ok(request_id)
+    }
+
+    /// Tier 3.5 — Hospital approves or denies a pending clock-in approval
+    /// request. Caller must be the shift creator (hospital admin).
+    pub async fn decide_clockin_approval(
+        &self,
+        request_id: Uuid,
+        requester_user_id: Uuid,
+        approve: bool,
+        notes: Option<String>,
+    ) -> Result<(), ShiftServiceError> {
+        let record = self
+            .shift_repo
+            .get_clockin_approval_request(request_id)
+            .await?
+            .ok_or(ShiftServiceError::ClockinApprovalNotFound)?;
+
+        if record.status != "pending" {
+            return Err(ShiftServiceError::InvalidStatus(format!(
+                "Clock-in approval is already {}",
+                record.status
+            )));
+        }
+
+        let shift = self
+            .shift_repo
+            .get_by_id(record.shift_id)
+            .await?
+            .ok_or(ShiftServiceError::NotFound(record.shift_id))?;
+        if shift.created_by != requester_user_id {
+            return Err(ShiftServiceError::NotAuthorized);
+        }
+
+        self.shift_repo
+            .decide_clockin_approval_request(request_id, requester_user_id, approve, notes.as_deref())
+            .await?;
+
+        // Best-effort notify the worker.
+        if let Ok(Some((first_name, _last_name, clinician_email))) =
+            self.shift_repo.get_clinician_contact(record.clinician_id).await
+        {
+            let content = if approve {
+                email_templates::clockin_approval_approved(&first_name, &shift.role_title)
+            } else {
+                email_templates::clockin_approval_denied(
+                    &first_name,
+                    &shift.role_title,
+                    notes.as_deref(),
+                )
+            };
+            let _ = self.email_outbox.enqueue_email(&clinician_email, &content).await;
+        }
+
+        Ok(())
+    }
+
+    /// Tier 3.1 — One iteration of the re-broadcast cadence sweep. Returns
+    /// the number of shifts re-broadcast on this tick. Safe to invoke from a
+    /// background loop on a fixed cadence (e.g. once per minute); the
+    /// per-shift cadence (STAT 15m / Urgent 30m) is enforced in SQL via
+    /// `find_shifts_due_for_rebroadcast`.
+    pub async fn rebroadcast_due_shifts(&self) -> Result<usize, ShiftServiceError> {
+        let due = self.shift_repo.find_shifts_due_for_rebroadcast().await?;
+        let count = due.len();
+        for shift in due {
+            // Compute fresh eligible-count and emit notifications.
+            let matched = match self.find_eligible_clinicians_for_shift(&shift).await {
+                Ok(list) => list.len() as i32,
+                Err(e) => {
+                    eprintln!("Warning: eligibility lookup failed for shift {}: {e}", shift.id);
+                    continue;
+                }
+            };
+
+            let radius_km = self
+                .shift_repo
+                .get_broadcast_radius_km(shift.hospital_id)
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or(5.0);
+
+            if let Err(e) = self
+                .shift_repo
+                .record_broadcast(shift.id, None, matched, radius_km)
+                .await
+            {
+                eprintln!("Warning: Failed to record re-broadcast for shift {}: {e}", shift.id);
+                continue;
+            }
+
+            // Fire notifications (best-effort).
+            if let Err(e) = self
+                .broadcast_shift_notifications(shift.id, shift.hospital_id, matched)
+                .await
+            {
+                eprintln!("Warning: re-broadcast notifications failed: {e}");
+            }
+
+            tracing::info!(
+                "Re-broadcast shift {} ({:?}) — {} eligible",
+                shift.id,
+                shift.priority,
+                matched
+            );
+        }
+        Ok(count)
+    }
+
+    /// Tier 3.2 — Map a shift's broad `RoleCategory` to the set of
+    /// `ClinicalSpecialty` values that should receive its broadcast.
+    /// "Other" matches every specialty.
+    fn specialties_for_role(role: &crate::models::shift::RoleCategory)
+        -> Vec<crate::models::clinician::ClinicalSpecialty>
+    {
+        use crate::models::clinician::ClinicalSpecialty as CS;
+        use crate::models::shift::RoleCategory as RC;
+        match role {
+            RC::Doctor => vec![
+                CS::EmergencyMedicine, CS::Pediatrics, CS::IcuSpecialist,
+                CS::Surgery, CS::Anesthesiology, CS::Cardiology,
+                CS::Obstetrics, CS::Psychiatry,
+            ],
+            RC::Nurse => vec![CS::GeneralNursing],
+            RC::Midwife => vec![CS::Obstetrics, CS::GeneralNursing],
+            RC::Pharmacist => vec![CS::Pharmacy],
+            RC::LabTechnician => vec![CS::LabTechnician],
+            RC::Radiographer => vec![CS::Radiology],
+            RC::Physiotherapist => vec![CS::Other],
+            RC::Other => vec![
+                CS::EmergencyMedicine, CS::Pediatrics, CS::IcuSpecialist,
+                CS::GeneralNursing, CS::Pharmacy, CS::LabTechnician,
+                CS::Surgery, CS::Radiology, CS::Anesthesiology,
+                CS::Cardiology, CS::Obstetrics, CS::Psychiatry, CS::Other,
+            ],
         }
     }
 
-    /// AC-07: Broadcast shift notifications to eligible workers
+    /// Tier 3.2 — Real eligibility filter that returns the clinicians who
+    /// should receive a broadcast for this shift. In-person shifts require
+    /// the clinician's last-known location to fall within the hospital's
+    /// `shift_broadcast_radius_km` (default 5km). Virtual shifts have no
+    /// distance restriction (BR-F1-08).
+    async fn find_eligible_clinicians_for_shift(
+        &self,
+        shift: &Shift,
+    ) -> Result<Vec<crate::repositories::shift::EligibleClinicianRow>, ShiftServiceError> {
+        let allowed = Self::specialties_for_role(&shift.role_category);
+        let candidates = self.shift_repo.find_eligible_clinicians(&allowed).await?;
+
+        if shift.shift_type == ShiftType::Virtual {
+            return Ok(candidates);
+        }
+
+        // In-person path — apply the 5km (or hospital-configured) radius.
+        let (h_lat, h_lng) = match self
+            .shift_repo
+            .get_hospital_coordinates(shift.hospital_id)
+            .await?
+        {
+            Some(coords) => coords,
+            // Hospital has no location on file; nobody is "near" anything.
+            None => return Ok(Vec::new()),
+        };
+        let radius_km = self
+            .shift_repo
+            .get_broadcast_radius_km(shift.hospital_id)
+            .await?
+            .unwrap_or(5.0);
+
+        let filtered = candidates
+            .into_iter()
+            .filter(|c| match (c.latitude, c.longitude) {
+                (Some(c_lat), Some(c_lng)) => {
+                    crate::utils::geo::haversine_km(h_lat, h_lng, c_lat, c_lng) <= radius_km
+                }
+                // No recorded location → cannot prove they're nearby.
+                _ => false,
+            })
+            .collect();
+        Ok(filtered)
+    }
+
+    async fn calculate_matched_clinicians(&self, shift: &Shift) -> i32 {
+        match self.find_eligible_clinicians_for_shift(shift).await {
+            Ok(list) => list.len() as i32,
+            Err(e) => {
+                eprintln!("Warning: eligibility filter failed: {e}");
+                0
+            }
+        }
+    }
+
+    /// AC-07: Broadcast shift notifications to eligible workers. Tier 3.2
+    /// upgrades this from a mock log line to a real per-recipient email
+    /// enqueue via the outbox. (Push notifications stay TODO until the
+    /// notification service grows a real delivery path.)
     async fn broadcast_shift_notifications(
         &self,
         shift_id: Uuid,
         hospital_id: Uuid,
         matched_count: i32,
     ) -> Result<(), ShiftServiceError> {
-        // Send push notifications to all eligible clinicians
         self.notification_service
             .send_shift_broadcast_notification(shift_id, hospital_id, matched_count)
             .await
-            .map_err(|e| ShiftServiceError::ValidationError(format!("Failed to send notifications: {}", e)))?;
+            .map_err(|e| {
+                ShiftServiceError::ValidationError(format!("Failed to send notifications: {e}"))
+            })?;
+
+        // Per-clinician email enqueue (best-effort).
+        if let Ok(Some(shift)) = self.shift_repo.get_by_id(shift_id).await {
+            if let Ok(eligible) = self.find_eligible_clinicians_for_shift(&shift).await {
+                let hospital_name = self
+                    .shift_repo
+                    .get_hospital_name(hospital_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_else(|| "the hospital".to_string());
+
+                for ec in eligible {
+                    let content = email_templates::shift_broadcast(
+                        &ec.first_name,
+                        &hospital_name,
+                        &shift.role_title,
+                        shift.scheduled_start,
+                        shift.priority.clone(),
+                    );
+                    if let Err(e) = self.email_outbox.enqueue_email(&ec.email, &content).await {
+                        eprintln!(
+                            "Warning: Failed to queue broadcast email to clinician {}: {e}",
+                            ec.clinician_id
+                        );
+                    }
+                }
+            }
+        }
 
         tracing::info!(
             "Broadcast notifications sent for shift {} to {} eligible workers",
