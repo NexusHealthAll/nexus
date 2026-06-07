@@ -46,6 +46,9 @@ pub enum ShiftServiceError {
     
     #[error("Hospital not approved: {0}")]
     HospitalNotApproved(String),
+
+    #[error("Too many active shifts")]
+    TooManyActiveShifts,
 }
 
 pub struct ShiftService {
@@ -69,7 +72,7 @@ impl ShiftService {
         &self,
         hospital_id: Uuid,
         created_by: Uuid,
-        request: CreateShiftRequest,
+        mut request: CreateShiftRequest,
     ) -> Result<Shift, ShiftServiceError> {
         // Check if hospital is approved
         let is_approved = self.shift_repo.check_hospital_approved(hospital_id).await?;
@@ -82,15 +85,52 @@ impl ShiftService {
         // Validate required fields based on pay type
         self.validate_request(&request)?;
 
+        // BR-F1-06: hospital cannot have more than 10 active unfilled shifts at once.
+        let active_unfilled = self
+            .shift_repo
+            .count_active_unfilled_shifts(hospital_id)
+            .await?;
+        if active_unfilled >= 10 {
+            return Err(ShiftServiceError::TooManyActiveShifts);
+        }
+
+        // BR-F1-07: STAT shifts get an automatic +20% bonus when none is set.
+        if request.priority == ShiftPriority::Stat
+            && request.stat_bonus_kobo.unwrap_or(0) == 0
+            && request.urgency_bonus_pct.is_none()
+        {
+            let base = match request.pay_type {
+                crate::models::shift::PayType::HourlyRate => request
+                    .rate_kobo_per_hour
+                    .unwrap_or(0)
+                    .saturating_mul(request.duration_hours as i64),
+                crate::models::shift::PayType::FixedRate => request.fixed_rate_kobo.unwrap_or(0),
+            };
+            request.stat_bonus_kobo = Some(base / 5); // +20%
+        }
+
         // AC-08: Check for duplicate shifts
         self.check_duplicate_shift(hospital_id, &request).await?;
+
+        // Take the tasks / equipment / requirements out before `request` is moved
+        // into the repo create call, so we can persist them in the same tx.
+        let tasks = std::mem::take(&mut request.tasks);
+        let equipment = std::mem::take(&mut request.equipment);
+        let requirements = std::mem::take(&mut request.requirements);
 
         let mut tx = self.pool.begin().await?;
 
         // Create shift
         let shift = self.shift_repo.create(&mut tx, hospital_id, created_by, request).await?;
 
-        // AC-04: Generate virtual link for virtual shifts
+        // F1-F12 / F1-F13 / F1-F14 — persist atomically within the same tx.
+        self.shift_repo
+            .insert_shift_description_and_requirements(
+                &mut tx, shift.id, &tasks, &equipment, &requirements,
+            )
+            .await?;
+
+        // AC-04 / F1-F15: Generate virtual link for virtual shifts
         if shift.shift_type == ShiftType::Virtual {
             let virtual_link = self.generate_virtual_link(shift.id);
             self.shift_repo.update_virtual_link(&mut tx, shift.id, &virtual_link).await?;
@@ -216,6 +256,12 @@ impl ShiftService {
             return Err(ShiftServiceError::ClinicianBusy);
         }
 
+        let verified_applicant_name = format!("{} {}", first_name.trim(), last_name.trim())
+            .trim()
+            .to_string();
+        let verified_license_number = license_number.expect("checked by profile_complete above");
+        let verified_role = role.expect("checked by profile_complete above");
+
         let mut tx = self.pool.begin().await?;
         let result = self
             .shift_repo
@@ -223,9 +269,9 @@ impl ShiftService {
                 &mut tx,
                 shift_id,
                 request.clinician_id,
-                &request.applicant_name,
-                &request.license_number,
-                &request.role,
+                &verified_applicant_name,
+                &verified_license_number,
+                &verified_role,
                 request.years_experience,
                 request.experience_summary.as_deref(),
             )
@@ -503,49 +549,91 @@ impl ShiftService {
             ));
         }
 
-        // Validate pay type requirements
+        // F1-F06: Duration must be one of the allowed values.
+        const ALLOWED_DURATIONS: [f32; 5] = [2.0, 4.0, 6.0, 8.0, 12.0];
+        if !ALLOWED_DURATIONS.iter().any(|d| (d - request.duration_hours).abs() < f32::EPSILON) {
+            return Err(ShiftServiceError::ValidationError(
+                "Duration must be one of 2, 4, 6, 8, or 12 hours".to_string(),
+            ));
+        }
+
+        // F1-F05: Start time must fall on a 15-minute boundary.
+        if let Err(e) = crate::utils::validation::validate_15min_boundary(&request.scheduled_start) {
+            return Err(ShiftServiceError::ValidationError(
+                e.message.map(|m| m.to_string())
+                    .unwrap_or_else(|| "Start time must be on a 15-minute boundary".to_string()),
+            ));
+        }
+
+        // BR-F1-05: Start time cannot be in the past.
+        let now = Utc::now();
+        if request.scheduled_start < now {
+            return Err(ShiftServiceError::ValidationError(
+                "Start time cannot be in the past".to_string(),
+            ));
+        }
+
+        // Validate pay type requirements + F1-F08/F1-F09 minimum rates.
+        const MIN_HOURLY_KOBO: i64 = 200_000;   // ₦2,000
+        const MIN_FIXED_KOBO: i64 = 1_000_000;  // ₦10,000
         match request.pay_type {
             crate::models::shift::PayType::HourlyRate => {
-                if request.rate_kobo_per_hour.is_none() {
-                    return Err(ShiftServiceError::ValidationError(
+                let rate = request.rate_kobo_per_hour.ok_or_else(|| {
+                    ShiftServiceError::ValidationError(
                         "Hourly rate is required for hourly pay type".to_string(),
+                    )
+                })?;
+                if rate < MIN_HOURLY_KOBO {
+                    return Err(ShiftServiceError::ValidationError(
+                        "Hourly rate must be at least ₦2,000".to_string(),
                     ));
                 }
             }
             crate::models::shift::PayType::FixedRate => {
-                if request.fixed_rate_kobo.is_none() {
-                    return Err(ShiftServiceError::ValidationError(
+                let rate = request.fixed_rate_kobo.ok_or_else(|| {
+                    ShiftServiceError::ValidationError(
                         "Fixed rate is required for fixed pay type".to_string(),
+                    )
+                })?;
+                if rate < MIN_FIXED_KOBO {
+                    return Err(ShiftServiceError::ValidationError(
+                        "Fixed rate must be at least ₦10,000".to_string(),
                     ));
                 }
             }
         }
 
-        // AC-03: Validate STAT shift logic - start time must be within one hour
-        if request.priority == ShiftPriority::Stat {
-            let now = Utc::now();
-            let time_until_start = request.scheduled_start.signed_duration_since(now);
-            
-            if time_until_start > Duration::hours(1) {
-                return Err(ShiftServiceError::ValidationError(
-                    "STAT shifts must start within one hour".to_string(),
-                ));
+        // BR-F1-01..04: Urgency-based start-time windows.
+        let time_until_start = request.scheduled_start.signed_duration_since(now);
+        match request.priority {
+            ShiftPriority::Stat => {
+                if time_until_start > Duration::hours(1) {
+                    return Err(ShiftServiceError::ValidationError(
+                        "STAT shifts must start within 1 hour of creation".to_string(),
+                    ));
+                }
             }
-
-            // AC-03: STAT shifts must have bonus payment
-            if request.urgency_bonus_pct.is_none() && request.stat_bonus_kobo.is_none() {
-                return Err(ShiftServiceError::ValidationError(
-                    "STAT shifts require urgency bonus or stat bonus".to_string(),
-                ));
+            ShiftPriority::Urgent => {
+                if time_until_start > Duration::hours(4) {
+                    return Err(ShiftServiceError::ValidationError(
+                        "Urgent shifts must start within 4 hours of creation".to_string(),
+                    ));
+                }
             }
-        }
-
-        // Validate Urgent logic
-        if request.priority == ShiftPriority::Urgent {
-            if request.urgency_bonus_pct.is_none() && request.stat_bonus_kobo.is_none() {
-                return Err(ShiftServiceError::ValidationError(
-                    "Urgent shifts require urgency bonus or stat bonus".to_string(),
-                ));
+            ShiftPriority::Normal => {
+                // Must start on the same calendar day (UTC).
+                if request.scheduled_start.date_naive() != now.date_naive() {
+                    return Err(ShiftServiceError::ValidationError(
+                        "Normal shifts must start today".to_string(),
+                    ));
+                }
+            }
+            ShiftPriority::Scheduled => {
+                if time_until_start > Duration::days(30) {
+                    return Err(ShiftServiceError::ValidationError(
+                        "Scheduled shifts can be at most 30 days in the future".to_string(),
+                    ));
+                }
             }
         }
 

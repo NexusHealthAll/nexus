@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     Json,
 };
@@ -286,30 +286,35 @@ pub async fn apply_for_shift(
     path = "/api/v1/shifts/{shift_id}/applications",
     params(
         ("shift_id" = Uuid, Path, description = "Shift unique identifier"),
-        ("requester_user_id" = Uuid, Query, description = "User ID of the requester"),
         ("page" = Option<i64>, Query, description = "Page number"),
         ("page_size" = Option<i64>, Query, description = "Page size"),
     ),
     responses(
         (status = 200, description = "Applications retrieved", body = ShiftApplicationsResponse),
+        (status = 401, description = "Missing or invalid token", body = ErrorResponse),
         (status = 403, description = "Not authorized", body = ErrorResponse),
         (status = 404, description = "Shift not found", body = ErrorResponse)
     ),
     tag = "shifts",
     summary = "List shift applications",
-    description = "List applications for a shift (only shift creator can view)"
+    description = "List applications for a shift (only the shift creator can view)"
 )]
 pub async fn list_shift_applications(
     State(state): State<AppState>,
     Path(shift_id): Path<Uuid>,
+    headers: HeaderMap,
     Query(query): Query<ShiftApplicationsQuery>,
 ) -> AppResult<Json<ShiftApplicationsResponse>> {
+    let claims = extract_claims(&headers)?;
+    let requester_user_id = Uuid::parse_str(&claims.sub)
+        .map_err(|_| AppError::Unauthorized("Invalid user ID in token".to_string()))?;
+
     let page = query.page.unwrap_or(1).max(1);
     let page_size = query.page_size.unwrap_or(20).clamp(1, 100);
 
     let (applications, total) = state
         .shift_service
-        .list_applications_for_shift(shift_id, query.requester_user_id, page, page_size)
+        .list_applications_for_shift(shift_id, requester_user_id, page, page_size)
         .await
         .map_err(map_shift_error)?;
 
@@ -465,5 +470,8 @@ fn map_shift_error(e: ShiftServiceError) -> AppError {
             AppError::Conflict("Shift already assigned".to_string())
         }
         ShiftServiceError::InvalidStatus(msg) => AppError::Conflict(msg),
+        ShiftServiceError::TooManyActiveShifts => AppError::Conflict(
+            "You have 10 active shifts. Complete or cancel some before creating more".to_string(),
+        ),
     }
 }

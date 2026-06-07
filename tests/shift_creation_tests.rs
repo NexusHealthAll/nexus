@@ -1,4 +1,4 @@
-use chrono::{Duration, Utc};
+use chrono::{Duration, Timelike, Utc};
 use nexuscare_backend::models::shift::{
     CreateShiftRequest, PayType, RoleCategory, ShiftPriority, ShiftType,
 };
@@ -9,8 +9,11 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// Helper to create a valid shift request
+/// Helper to create a valid shift request. Start time is snapped to the next
+/// 15-minute boundary in the future (F1-F05). Defaults to Normal priority and a
+/// today-relative start, satisfying BR-F1-03.
 fn create_valid_shift_request() -> CreateShiftRequest {
+    let start = next_15min_boundary(Utc::now() + Duration::hours(2));
     CreateShiftRequest {
         role_category: RoleCategory::Doctor,
         role_title: "Emergency Doctor".to_string(),
@@ -19,15 +22,33 @@ fn create_valid_shift_request() -> CreateShiftRequest {
         shift_type: ShiftType::InPerson,
         priority: ShiftPriority::Normal,
         urgency_bonus_pct: None,
-        scheduled_start: Utc::now() + Duration::hours(2),
+        scheduled_start: start,
         duration_hours: 8.0,
         pay_type: PayType::HourlyRate,
         rate_kobo_per_hour: Some(800_000), // ₦8,000/hr
         fixed_rate_kobo: None,
         stat_bonus_kobo: None,
         shift_label: Some("Night Shift: Emergency".to_string()),
+        job_description: Some("Cover the night shift in the ED.".to_string()),
+        tasks: vec!["Triage incoming patients".to_string()],
+        equipment: vec![],
+        requirements: vec!["Valid medical license".to_string()],
         notes: Some("Urgent coverage needed".to_string()),
         broadcast_consent_confirmed: true,
+    }
+}
+
+/// Snap a timestamp forward to the next 15-minute boundary with zero seconds.
+fn next_15min_boundary(ts: chrono::DateTime<Utc>) -> chrono::DateTime<Utc> {
+    let snapped = ts
+        .with_second(0).unwrap()
+        .with_nanosecond(0).unwrap();
+    let minute = snapped.minute();
+    let remainder = minute % 15;
+    if remainder == 0 {
+        snapped
+    } else {
+        snapped + Duration::minutes((15 - remainder) as i64)
     }
 }
 

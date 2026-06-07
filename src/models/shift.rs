@@ -33,12 +33,14 @@ pub enum ShiftStatus {
 #[sqlx(type_name = "shift_priority", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum ShiftPriority {
-    /// Normal priority
+    /// Normal priority — must start same day
     Normal,
-    /// Elevated priority — shown as "STAT" badge (orange), +20% bonus rate
+    /// Elevated priority — shown as "STAT" badge (orange), starts within 1 hour, +20% bonus rate
     Stat,
-    /// Highest priority — shown as "URGENT" badge (red/yellow)
+    /// Highest priority — shown as "URGENT" badge (red/yellow), starts within 4 hours
     Urgent,
+    /// Scheduled in advance — shown as "SCHEDULED" badge (blue), starts up to 30 days out
+    Scheduled,
 }
 
 /// Delivery mode of a shift — shown as radio toggle in the wizard.
@@ -62,6 +64,7 @@ pub enum RoleCategory {
     Nurse,
     Pharmacist,
     LabTechnician,
+    Midwife,
     Radiographer,
     Physiotherapist,
     Other,
@@ -575,12 +578,6 @@ pub struct ShiftApplication {
 #[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
 pub struct ShiftApplicationRequest {
     pub clinician_id: Uuid,
-    #[validate(length(min = 2, max = 200))]
-    pub applicant_name: String,
-    #[validate(length(min = 2, max = 100))]
-    pub license_number: String,
-    #[validate(length(min = 2, max = 100))]
-    pub role: String,
     #[validate(range(min = 0, max = 60))]
     pub years_experience: i32,
     #[validate(length(max = 2000))]
@@ -589,7 +586,6 @@ pub struct ShiftApplicationRequest {
 
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct ShiftApplicationsQuery {
-    pub requester_user_id: Uuid,
     pub page: Option<i64>,
     pub page_size: Option<i64>,
 }
@@ -636,6 +632,22 @@ pub struct CreateShiftRequest {
 
     #[validate(length(max = 100))]
     pub shift_label: Option<String>,
+
+    /// F1-F11: Free-text job description, capped at 2000 chars.
+    #[validate(length(max = 2000, message = "Job description must be 2000 characters or less"))]
+    pub job_description: Option<String>,
+
+    /// F1-F12: Tasks the clinician will perform. Required, at least one entry.
+    #[validate(length(min = 1, message = "At least one task is required"))]
+    pub tasks: Vec<String>,
+
+    /// F1-F13: Equipment the hospital provides. Optional.
+    #[serde(default)]
+    pub equipment: Vec<String>,
+
+    /// F1-F14: Required qualifications. Required, at least one entry.
+    #[validate(length(min = 1, message = "At least one requirement is required"))]
+    pub requirements: Vec<String>,
 
     #[validate(length(max = 1000))]
     pub notes: Option<String>,
