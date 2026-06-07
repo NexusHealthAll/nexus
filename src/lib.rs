@@ -4,6 +4,7 @@ pub mod middlewares;
 pub mod routes;
 pub mod handlers;
 pub mod repositories;
+pub mod schedulers;
 pub mod services;
 
 // Re-export commonly used items

@@ -8,6 +8,9 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 use nexuscare_backend::utils::AppConfig;
 use nexuscare_backend::routes;
 use nexuscare_backend::repositories::EmailOutboxRepository;
+use nexuscare_backend::schedulers::{
+    BroadcastScheduler, HandoverAutoApprovalScheduler, OfferExpiryScheduler,
+};
 use nexuscare_backend::services::{EmailOutboxService, EmailOutboxWorker, NotificationService};
 
 #[tokio::main]
@@ -61,12 +64,29 @@ async fn main() -> anyhow::Result<()> {
     let worker = EmailOutboxWorker::new(email_outbox_service.clone());
     tokio::spawn(worker.run());
 
-    // Build the application router
-    let app = routes::create_router(
+    // Build the application router (also returns the AppState so we can
+    // hand its services to background schedulers).
+    let (app, state) = routes::create_router(
         pool.clone(),
         notification_service,
         email_outbox_service,
     );
+
+    // Tier 3.1 — re-broadcast cadence sweep (STAT every 15 min, Urgent every
+    // 30 min). The scheduler ticks every BROADCAST_SCHEDULER_POLL_SECS
+    // (default 60s) and lets SQL decide which shifts are due.
+    let broadcast_scheduler = BroadcastScheduler::new(state.shift_service.clone());
+    tokio::spawn(broadcast_scheduler.run());
+
+    // Tier 3.3 — offer-expiry sweep (BR-F1-23). Marks offers past their
+    // 30-min `expires_at` as `expired` and notifies the hospital.
+    let offer_expiry_scheduler = OfferExpiryScheduler::new(state.shift_service.clone());
+    tokio::spawn(offer_expiry_scheduler.run());
+
+    // Tier 3.4 — handover auto-approval sweep (BR-F1-39). Approves handovers
+    // whose 48h hospital-action window has elapsed.
+    let handover_scheduler = HandoverAutoApprovalScheduler::new(state.shift_service.clone());
+    tokio::spawn(handover_scheduler.run());
 
     let addr: SocketAddr = format!("{}:{}", cfg.server.host, cfg.server.port)
         .parse()

@@ -9,14 +9,15 @@ use utoipa::ToSchema;
 
 use crate::{
     models::shift::{
-        AcceptShiftRequest, ClockinRequest, ClockinResponse, ClockoutResponse,
-        CreateShiftRequest, DeclineShiftRequest, EditRatingRequest,
-        HandoverResponse, HandoverRevisionRequest, MyApplicationEntry,
-        NearbyShiftCard, RankedInterestedClinician, RateHospitalRequest,
-        RateWorkerRequest, RatingResponse, Shift, ShiftApplication,
-        ShiftApplicationRequest, ShiftApplicationsQuery, ShiftAssignRequest,
-        ShiftCancelRequest, ShiftInterestRequest, ShiftListQuery, ShiftOfferRequest,
-        ShiftOfferResponse, ShiftRescheduleRequest, SubmitHandoverRequest,
+        AcceptShiftRequest, ClockinApprovalDecisionRequest, ClockinApprovalRequest,
+        ClockinRequest, ClockinResponse, ClockoutResponse, CreateShiftRequest,
+        DeclineShiftRequest, EditRatingRequest, HandoverResponse,
+        HandoverRevisionRequest, MyApplicationEntry, NearbyShiftCard,
+        RankedInterestedClinician, RateHospitalRequest, RateWorkerRequest,
+        RatingResponse, Shift, ShiftApplication, ShiftApplicationRequest,
+        ShiftApplicationsQuery, ShiftAssignRequest, ShiftCancelRequest,
+        ShiftInterestRequest, ShiftListQuery, ShiftOfferRequest, ShiftOfferResponse,
+        ShiftRescheduleRequest, SubmitHandoverRequest,
     },
     routes::AppState,
     services::shift_service::{self, ShiftServiceError},
@@ -946,6 +947,126 @@ pub async fn dismiss_shift(
         .map_err(map_shift_error)
 }
 
+/// POST /api/v1/shifts/{shift_id}/clockin/approval-request
+#[utoipa::path(
+    post,
+    path = "/api/v1/shifts/{shift_id}/clockin/approval-request",
+    request_body = ClockinApprovalRequest,
+    params(("shift_id" = Uuid, Path, description = "Shift unique identifier")),
+    responses(
+        (status = 201, description = "Approval request created", body = serde_json::Value),
+        (status = 401, body = ErrorResponse),
+        (status = 403, body = ErrorResponse),
+        (status = 404, body = ErrorResponse),
+        (status = 409, description = "Already has a pending or decided request", body = ErrorResponse),
+        (status = 422, body = ErrorResponse)
+    ),
+    tag = "shifts",
+    summary = "Submit a GPS-fallback clock-in approval request (worker)",
+    description = "When GPS is too inaccurate to clear the geofence, the worker submits a photo of the hospital entrance plus the device coords for hospital review (§3.6.6)."
+)]
+pub async fn request_clockin_approval(
+    State(state): State<AppState>,
+    Path(shift_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<ClockinApprovalRequest>,
+) -> AppResult<(StatusCode, Json<serde_json::Value>)> {
+    let claims = extract_claims(&headers)?;
+    let worker_user_id = Uuid::parse_str(&claims.sub)
+        .map_err(|_| AppError::Unauthorized("Invalid user ID in token".to_string()))?;
+
+    let id = state
+        .shift_service
+        .request_clockin_approval(shift_id, worker_user_id, payload)
+        .await
+        .map_err(map_shift_error)?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "approval_request_id": id })),
+    ))
+}
+
+/// POST /api/v1/clockin-approvals/{request_id}/approve
+#[utoipa::path(
+    post,
+    path = "/api/v1/clockin-approvals/{request_id}/approve",
+    request_body = ClockinApprovalDecisionRequest,
+    params(("request_id" = Uuid, Path, description = "Approval request id")),
+    responses(
+        (status = 204, description = "Approved"),
+        (status = 401, body = ErrorResponse),
+        (status = 403, body = ErrorResponse),
+        (status = 404, body = ErrorResponse),
+        (status = 409, description = "Already decided", body = ErrorResponse),
+        (status = 422, body = ErrorResponse)
+    ),
+    tag = "shifts",
+    summary = "Approve a manual clock-in request (hospital)",
+    description = "Hospital admin approves a pending GPS-fallback clock-in request, unlocking the manual clock-in method for this (shift, clinician)."
+)]
+pub async fn approve_clockin_request(
+    State(state): State<AppState>,
+    Path(request_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<ClockinApprovalDecisionRequest>,
+) -> AppResult<StatusCode> {
+    payload
+        .validate()
+        .map_err(|e| AppError::Validation(e.to_string()))?;
+
+    let claims = extract_claims(&headers)?;
+    let requester_user_id = Uuid::parse_str(&claims.sub)
+        .map_err(|_| AppError::Unauthorized("Invalid user ID in token".to_string()))?;
+
+    state
+        .shift_service
+        .decide_clockin_approval(request_id, requester_user_id, true, payload.notes)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(map_shift_error)
+}
+
+/// POST /api/v1/clockin-approvals/{request_id}/deny
+#[utoipa::path(
+    post,
+    path = "/api/v1/clockin-approvals/{request_id}/deny",
+    request_body = ClockinApprovalDecisionRequest,
+    params(("request_id" = Uuid, Path, description = "Approval request id")),
+    responses(
+        (status = 204, description = "Denied"),
+        (status = 401, body = ErrorResponse),
+        (status = 403, body = ErrorResponse),
+        (status = 404, body = ErrorResponse),
+        (status = 409, description = "Already decided", body = ErrorResponse),
+        (status = 422, body = ErrorResponse)
+    ),
+    tag = "shifts",
+    summary = "Deny a manual clock-in request (hospital)",
+    description = "Hospital admin denies a pending GPS-fallback clock-in request."
+)]
+pub async fn deny_clockin_request(
+    State(state): State<AppState>,
+    Path(request_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(payload): Json<ClockinApprovalDecisionRequest>,
+) -> AppResult<StatusCode> {
+    payload
+        .validate()
+        .map_err(|e| AppError::Validation(e.to_string()))?;
+
+    let claims = extract_claims(&headers)?;
+    let requester_user_id = Uuid::parse_str(&claims.sub)
+        .map_err(|_| AppError::Unauthorized("Invalid user ID in token".to_string()))?;
+
+    state
+        .shift_service
+        .decide_clockin_approval(request_id, requester_user_id, false, payload.notes)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(map_shift_error)
+}
+
 /// POST /api/v1/shifts/{shift_id}/assign
 #[utoipa::path(
     post,
@@ -1134,6 +1255,15 @@ fn map_shift_error(e: ShiftServiceError) -> AppError {
         ShiftServiceError::RatingNotFound => AppError::NotFound("Rating not found".to_string()),
         ShiftServiceError::RatingEditWindowClosed => AppError::Conflict(
             "Rating edit window (48 hours) has closed".to_string(),
+        ),
+        ShiftServiceError::DuplicateClockinApproval => AppError::Conflict(
+            "Clock-in approval request already exists for this shift".to_string(),
+        ),
+        ShiftServiceError::ClockinApprovalNotFound => {
+            AppError::NotFound("Clock-in approval request not found".to_string())
+        }
+        ShiftServiceError::ManualClockinNotApproved => AppError::Conflict(
+            "Manual clock-in requires an approved GPS-fallback request".to_string(),
         ),
     }
 }

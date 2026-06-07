@@ -68,6 +68,10 @@ pub struct Clinician {
     pub rating: f32,
     /// Total number of ratings contributing to the average
     pub rating_count: i32,
+    /// Cached acceptance rate as a percentage 0–100 used by the §3.4.3
+    /// ranking algorithm. `None` until the clinician has at least one offer.
+    #[sqlx(default)]
+    pub acceptance_rate_pct: Option<f32>,
 
     pub avatar_url: Option<String>,
 

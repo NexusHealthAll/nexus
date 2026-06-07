@@ -204,6 +204,185 @@ pub fn shift_assigned_clinician(
     EmailContent { subject, text_body, html_body }
 }
 
+/// Tier 3.2 / Tier 3.1 — Sent to each eligible clinician when a shift is
+/// broadcast (or re-broadcast). Per FRS §3.2.5 the body differs by urgency.
+pub fn shift_broadcast(
+    clinician_first_name: &str,
+    hospital_name: &str,
+    role_title: &str,
+    scheduled_start: DateTime<Utc>,
+    priority: crate::models::shift::ShiftPriority,
+) -> EmailContent {
+    use crate::models::shift::ShiftPriority;
+    let (subject, label) = match priority {
+        ShiftPriority::Stat => (
+            "STAT shift available - NexusCare".to_string(),
+            "🚨 STAT shift",
+        ),
+        ShiftPriority::Urgent => (
+            "Urgent shift available - NexusCare".to_string(),
+            "⚠️ Urgent shift",
+        ),
+        ShiftPriority::Normal => (
+            "New shift available - NexusCare".to_string(),
+            "📍 New shift",
+        ),
+        ShiftPriority::Scheduled => (
+            "Scheduled shift available - NexusCare".to_string(),
+            "📅 Scheduled shift",
+        ),
+    };
+
+    let text_body = format!(
+        "Hello {},\n\n{}: {} at {}.\nStarts: {}\n\nOpen the NexusCare app to view details and express interest.\n\nNexusCare",
+        clinician_first_name,
+        label,
+        role_title,
+        hospital_name,
+        format_timestamp(scheduled_start)
+    );
+    let html_body = wrap_html(
+        label,
+        &format!(
+            "<p style=\"margin:0 0 12px 0;\">Hello {},</p>
+             <p style=\"margin:0 0 12px 0;\"><strong>{}:</strong> {} at <strong>{}</strong>.</p>
+             <p style=\"margin:0 0 12px 0;\"><strong>Starts:</strong> {}</p>
+             <p style=\"margin:0 0 12px 0;\">Open the NexusCare app to view details and express interest.</p>
+             <p style=\"margin:0;\">NexusCare</p>",
+            clinician_first_name,
+            label,
+            role_title,
+            hospital_name,
+            format_timestamp(scheduled_start)
+        ),
+    );
+
+    EmailContent { subject, text_body, html_body }
+}
+
+/// Tier 3.5 — Sent to the hospital when a worker requests a GPS-fallback
+/// clock-in approval (photo of the entrance).
+pub fn clockin_approval_requested(
+    clinician_name: &str,
+    role_title: &str,
+) -> EmailContent {
+    let subject = "Manual Clock-In Requested - NexusCare".to_string();
+    let text_body = format!(
+        "{} has requested a manual clock-in for the {} shift because their GPS fix is inaccurate.\n\nReview the photo in the NexusCare app and approve or deny.\n\nNexusCare",
+        clinician_name, role_title
+    );
+    let html_body = wrap_html(
+        "Manual Clock-In Requested",
+        &format!(
+            "<p style=\"margin:0 0 12px 0;\"><strong>{}</strong> has requested a manual clock-in for the <strong>{}</strong> shift because their GPS fix is inaccurate.</p>
+             <p style=\"margin:0 0 12px 0;\">Review the photo in the NexusCare app and approve or deny.</p>
+             <p style=\"margin:0;\">NexusCare</p>",
+            clinician_name, role_title
+        ),
+    );
+    EmailContent { subject, text_body, html_body }
+}
+
+/// Tier 3.5 — Sent to the worker when their GPS-fallback request is approved.
+pub fn clockin_approval_approved(
+    clinician_first_name: &str,
+    role_title: &str,
+) -> EmailContent {
+    let subject = "Manual Clock-In Approved - NexusCare".to_string();
+    let text_body = format!(
+        "Hello {},\n\nYour manual clock-in request for the {} shift was approved.\nYou can now clock in via the NexusCare app.\n\nNexusCare",
+        clinician_first_name, role_title
+    );
+    let html_body = wrap_html(
+        "Manual Clock-In Approved",
+        &format!(
+            "<p style=\"margin:0 0 12px 0;\">Hello {},</p>
+             <p style=\"margin:0 0 12px 0;\">Your manual clock-in request for the <strong>{}</strong> shift was approved.</p>
+             <p style=\"margin:0 0 12px 0;\">You can now clock in via the NexusCare app.</p>
+             <p style=\"margin:0;\">NexusCare</p>",
+            clinician_first_name, role_title
+        ),
+    );
+    EmailContent { subject, text_body, html_body }
+}
+
+/// Tier 3.5 — Sent to the worker when their GPS-fallback request is denied.
+pub fn clockin_approval_denied(
+    clinician_first_name: &str,
+    role_title: &str,
+    notes: Option<&str>,
+) -> EmailContent {
+    let subject = "Manual Clock-In Denied - NexusCare".to_string();
+    let notes_line = notes
+        .filter(|s| !s.trim().is_empty())
+        .map(|n| format!("\nNotes: {n}"))
+        .unwrap_or_default();
+    let text_body = format!(
+        "Hello {},\n\nYour manual clock-in request for the {} shift was denied.{}\n\nContact the hospital admin if you believe this is in error.\n\nNexusCare",
+        clinician_first_name, role_title, notes_line
+    );
+    let html_body = wrap_html(
+        "Manual Clock-In Denied",
+        &format!(
+            "<p style=\"margin:0 0 12px 0;\">Hello {},</p>
+             <p style=\"margin:0 0 12px 0;\">Your manual clock-in request for the <strong>{}</strong> shift was denied.{}</p>
+             <p style=\"margin:0 0 12px 0;\">Contact the hospital admin if you believe this is in error.</p>
+             <p style=\"margin:0;\">NexusCare</p>",
+            clinician_first_name, role_title,
+            notes.filter(|s| !s.trim().is_empty())
+                .map(|n| format!("<br/><strong>Notes:</strong> {n}"))
+                .unwrap_or_default()
+        ),
+    );
+    EmailContent { subject, text_body, html_body }
+}
+
+/// Tier 3.4 — Sent to the worker when their handover is auto-approved after
+/// the 48h hospital-action window lapses (BR-F1-39).
+pub fn handover_auto_approved(
+    clinician_first_name: &str,
+    role_title: &str,
+) -> EmailContent {
+    let subject = "Handover Auto-Approved - NexusCare".to_string();
+    let text_body = format!(
+        "Hello {},\n\nYour handover for the {} shift was auto-approved after 48 hours without hospital action.\nPayment processing can proceed.\n\nNexusCare",
+        clinician_first_name, role_title
+    );
+    let html_body = wrap_html(
+        "Handover Auto-Approved",
+        &format!(
+            "<p style=\"margin:0 0 12px 0;\">Hello {},</p>
+             <p style=\"margin:0 0 12px 0;\">Your handover for the <strong>{}</strong> shift was auto-approved after 48 hours without hospital action.</p>
+             <p style=\"margin:0 0 12px 0;\">Payment processing can proceed.</p>
+             <p style=\"margin:0;\">NexusCare</p>",
+            clinician_first_name, role_title
+        ),
+    );
+
+    EmailContent { subject, text_body, html_body }
+}
+
+/// Tier 3.3 — Sent to the hospital when a shift offer to a clinician expires
+/// (the worker did not respond within the 30-minute window).
+pub fn shift_offer_expired(role_title: &str) -> EmailContent {
+    let subject = "Shift Offer Expired - NexusCare".to_string();
+    let text_body = format!(
+        "The offer for {} expired because the worker did not respond within 30 minutes.\nYou can select the next ranked candidate.\n\nNexusCare",
+        role_title
+    );
+    let html_body = wrap_html(
+        "Shift Offer Expired",
+        &format!(
+            "<p style=\"margin:0 0 12px 0;\">The offer for <strong>{}</strong> expired because the worker did not respond within 30 minutes.</p>
+             <p style=\"margin:0 0 12px 0;\">You can select the next ranked candidate.</p>
+             <p style=\"margin:0;\">NexusCare</p>",
+            role_title
+        ),
+    );
+
+    EmailContent { subject, text_body, html_body }
+}
+
 /// Tier 2.4 — Sent to the hospital when a worker declines a shift offer.
 pub fn shift_offer_declined(
     role_title: &str,
