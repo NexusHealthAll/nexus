@@ -10,3 +10,5 @@ pub mod clinician;
 pub mod clinician_registration;
 pub mod shift;
 pub mod email_outbox;
+pub mod patient;
+pub mod feedback;

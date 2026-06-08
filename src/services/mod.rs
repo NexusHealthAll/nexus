@@ -11,6 +11,12 @@ pub mod auth_service;
 pub mod shift_service;
 pub mod email_outbox_service;
 pub mod email_templates;
+pub mod bronze_service;
+pub mod silver_service;
+pub mod gold_service;
+pub mod ml_service;
+pub mod pipeline_service;
+pub mod pipeline_event_service;
 
 pub use geocoding::{GeocodingClient, GeocodingError};
 pub use paystack::{PaystackClient, PaystackError};
@@ -23,3 +29,9 @@ pub use registration_service::{RegistrationService, RegistrationError, HospitalR
 pub use clinician_registration_service::{ClinicianRegistrationService, ClinicianRegistrationError};
 pub use shift_service::{ShiftService, ShiftServiceError};
 pub use email_outbox_service::{EmailOutboxService, EmailOutboxError, EmailOutboxWorker};
+pub use bronze_service::BronzeService;
+pub use silver_service::SilverService;
+pub use gold_service::GoldService;
+pub use ml_service::MlService;
+pub use pipeline_service::PipelineService;
+pub use pipeline_event_service::PipelineEventService;
