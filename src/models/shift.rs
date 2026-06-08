@@ -16,6 +16,8 @@ use utoipa::ToSchema;
 pub enum ShiftStatus {
     /// Posted, waiting for a clinician to be assigned
     Open,
+    /// Offer accepted; awaiting the scheduled start time
+    Assigned,
     /// Clinician assigned, shift not yet started
     Upcoming,
     /// Shift is currently running
@@ -33,12 +35,14 @@ pub enum ShiftStatus {
 #[sqlx(type_name = "shift_priority", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum ShiftPriority {
-    /// Normal priority
+    /// Normal priority — must start same day
     Normal,
-    /// Elevated priority — shown as "STAT" badge (orange), +20% bonus rate
+    /// Elevated priority — shown as "STAT" badge (orange), starts within 1 hour, +20% bonus rate
     Stat,
-    /// Highest priority — shown as "URGENT" badge (red/yellow)
+    /// Highest priority — shown as "URGENT" badge (red/yellow), starts within 4 hours
     Urgent,
+    /// Scheduled in advance — shown as "SCHEDULED" badge (blue), starts up to 30 days out
+    Scheduled,
 }
 
 /// Delivery mode of a shift — shown as radio toggle in the wizard.
@@ -62,6 +66,7 @@ pub enum RoleCategory {
     Nurse,
     Pharmacist,
     LabTechnician,
+    Midwife,
     Radiographer,
     Physiotherapist,
     Other,
@@ -96,7 +101,7 @@ pub enum PayType {
 }
 
 /// How a clinician's clock-in was verified.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, ToSchema)]
 #[sqlx(type_name = "clockin_method", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
 pub enum ClockinMethod {
@@ -106,6 +111,8 @@ pub enum ClockinMethod {
     QrCode,
     /// Manually confirmed by a hospital admin
     Manual,
+    /// Virtual shift — clinician activated the virtual consultation link
+    Virtual,
 }
 
 // ---------------------------------------------------------------------------
@@ -575,12 +582,6 @@ pub struct ShiftApplication {
 #[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
 pub struct ShiftApplicationRequest {
     pub clinician_id: Uuid,
-    #[validate(length(min = 2, max = 200))]
-    pub applicant_name: String,
-    #[validate(length(min = 2, max = 100))]
-    pub license_number: String,
-    #[validate(length(min = 2, max = 100))]
-    pub role: String,
     #[validate(range(min = 0, max = 60))]
     pub years_experience: i32,
     #[validate(length(max = 2000))]
@@ -589,7 +590,6 @@ pub struct ShiftApplicationRequest {
 
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct ShiftApplicationsQuery {
-    pub requester_user_id: Uuid,
     pub page: Option<i64>,
     pub page_size: Option<i64>,
 }
@@ -636,6 +636,22 @@ pub struct CreateShiftRequest {
 
     #[validate(length(max = 100))]
     pub shift_label: Option<String>,
+
+    /// F1-F11: Free-text job description, capped at 2000 chars.
+    #[validate(length(max = 2000, message = "Job description must be 2000 characters or less"))]
+    pub job_description: Option<String>,
+
+    /// F1-F12: Tasks the clinician will perform. Required, at least one entry.
+    #[validate(length(min = 1, message = "At least one task is required"))]
+    pub tasks: Vec<String>,
+
+    /// F1-F13: Equipment the hospital provides. Optional.
+    #[serde(default)]
+    pub equipment: Vec<String>,
+
+    /// F1-F14: Required qualifications. Required, at least one entry.
+    #[validate(length(min = 1, message = "At least one requirement is required"))]
+    pub requirements: Vec<String>,
 
     #[validate(length(max = 1000))]
     pub notes: Option<String>,
@@ -701,4 +717,328 @@ pub struct OpenShiftCard {
     pub interested_count: i64,
     pub top_match_name: Option<String>,
     pub is_waitlisted: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2 — Hospital selection & assignment (FRS §3.4)
+// ---------------------------------------------------------------------------
+
+/// One row in the "Interested Workers" ranked list a hospital admin sees on
+/// the shift detail page. Score is the 0–100 weighted total from §3.4.3.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct RankedInterestedClinician {
+    pub clinician_id: Uuid,
+    /// Display name. Until the clinician is selected, this is "last name only"
+    /// per BR-F1-19/20 (e.g. "K. Abiola" → "Abiola").
+    pub display_name: String,
+    /// Distance from the hospital in km. `None` if the clinician has no
+    /// recorded location.
+    pub distance_km: Option<f64>,
+    pub rating: f32,
+    pub rating_count: i32,
+    /// Number of shifts the clinician has completed on the platform.
+    pub completed_shifts: i64,
+    /// Acceptance rate as a percentage (0–100). Computed from
+    /// `shift_assignments` history. `None` if the clinician has no offer history.
+    pub acceptance_rate_pct: Option<f64>,
+    /// Whether the clinician meets every required qualification.
+    /// Until clinician qualifications are stored, this defaults to true.
+    pub quals_match: bool,
+    /// Total weighted score (0–100) per FRS §3.4.3.
+    pub score: f64,
+}
+
+/// Request body for `POST /api/v1/shifts/{shift_id}/offer`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct ShiftOfferRequest {
+    pub clinician_id: Uuid,
+}
+
+/// Response body for `POST /api/v1/shifts/{shift_id}/offer`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ShiftOfferResponse {
+    pub assignment_id: Uuid,
+    pub shift_id: Uuid,
+    pub clinician_id: Uuid,
+    pub expires_at: DateTime<Utc>,
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2.4 — Worker accept / decline (FRS §3.5)
+// ---------------------------------------------------------------------------
+
+/// All 5 NDPR consent booleans from spec §3.5.3. Every one must be `true`
+/// for an accept to be allowed.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct NdprConsent {
+    /// "I agree to comply with Nigeria Data Protection Regulation (NDPR)."
+    pub ndpr_compliance: bool,
+    /// "I will not record or photograph patients without consent."
+    pub no_patient_capture: bool,
+    /// "I will only use hospital-provided systems for documentation."
+    pub hospital_systems_only: bool,
+    /// "I will complete handover documentation before clocking out."
+    pub complete_handover: bool,
+    /// "I understand that violation may result in account suspension."
+    pub understand_violation: bool,
+}
+
+impl NdprConsent {
+    pub fn all_accepted(&self) -> bool {
+        self.ndpr_compliance
+            && self.no_patient_capture
+            && self.hospital_systems_only
+            && self.complete_handover
+            && self.understand_violation
+    }
+}
+
+/// Request body for `POST /api/v1/shifts/{shift_id}/accept`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct AcceptShiftRequest {
+    pub ndpr_consent: NdprConsent,
+}
+
+/// Request body for `POST /api/v1/shifts/{shift_id}/decline`.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct DeclineShiftRequest {
+    pub reason: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2.5 — Clock-in (FRS §3.6)
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /api/v1/shifts/{shift_id}/clockin`.
+/// For in-person shifts (`method = "gps"`), `latitude` + `longitude` are required.
+/// For virtual shifts (`method = "virtual"`), GPS is not required (BR-F1-34).
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+pub struct ClockinRequest {
+    pub method: ClockinMethod,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+}
+
+// ---------------------------------------------------------------------------
+// Tier 3.5 — GPS-fallback clock-in approval (FRS §3.6.6)
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /api/v1/shifts/{shift_id}/clockin/approval-request`.
+/// Worker submits a photo of the hospital entrance plus device GPS when their
+/// GPS fix is too imprecise to satisfy the geofence.
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+pub struct ClockinApprovalRequest {
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    /// Base64-encoded image bytes. Production should switch to a presigned
+    /// upload URL.
+    #[validate(length(min = 1, max = 8_000_000))]
+    pub photo_base64: String,
+    /// Optional MIME type (e.g. `"image/jpeg"`).
+    #[validate(length(max = 50))]
+    pub photo_mime_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema, FromRow)]
+pub struct ClockinApprovalRecord {
+    pub id: Uuid,
+    pub shift_id: Uuid,
+    pub clinician_id: Uuid,
+    pub latitude: Option<f64>,
+    pub longitude: Option<f64>,
+    pub status: String,
+    pub submitted_at: DateTime<Utc>,
+    pub decided_at: Option<DateTime<Utc>>,
+    pub decision_notes: Option<String>,
+}
+
+/// Request body for `POST /api/v1/clockin-approvals/{id}/deny` (notes optional
+/// on both approve and deny so we share a struct).
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+pub struct ClockinApprovalDecisionRequest {
+    #[validate(length(max = 1000))]
+    pub notes: Option<String>,
+}
+
+/// Response body for `POST /api/v1/shifts/{shift_id}/clockin`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ClockinResponse {
+    pub attendance_id: Uuid,
+    pub shift_id: Uuid,
+    pub clockin_at: DateTime<Utc>,
+    /// Distance from hospital in metres at clock-in (only set for GPS method).
+    pub distance_meters: Option<f64>,
+    /// Minutes late vs. `scheduled_start`. 0 if on time or early.
+    pub late_minutes: i32,
+    /// True when the clinician is 15–30 minutes late (§3.6.7 — 25% pay
+    /// reduction for the first hour).
+    pub late_penalty_applied: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2.6 — Handover + clock-out (FRS §3.7)
+// ---------------------------------------------------------------------------
+
+/// Request body for `POST /api/v1/shifts/{shift_id}/handover` (F1-H01..H05).
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+pub struct SubmitHandoverRequest {
+    /// F1-H01 — Total patients seen during the shift.
+    #[validate(range(min = 0, max = 1000))]
+    pub patients_seen: i32,
+    /// F1-H02 — Patients requiring immediate follow-up (free-form objects).
+    #[serde(default)]
+    pub critical_patients: Vec<serde_json::Value>,
+    /// F1-H03 — Lab results, referrals, medications still pending.
+    #[serde(default)]
+    pub pending_tasks: Vec<serde_json::Value>,
+    /// F1-H04 — Instructions for the incoming staff (required).
+    #[validate(length(min = 1, max = 4000))]
+    pub instructions: String,
+    /// F1-H05 — Equipment issues, optional.
+    #[validate(length(max = 4000))]
+    pub equipment_status: Option<String>,
+}
+
+/// Response for a handover submission.
+#[derive(Debug, Clone, Serialize, ToSchema, FromRow)]
+pub struct HandoverResponse {
+    pub id: Uuid,
+    pub shift_id: Uuid,
+    pub patients_seen: i32,
+    pub critical_patients: serde_json::Value,
+    pub pending_tasks: serde_json::Value,
+    pub instructions: String,
+    pub equipment_status: Option<String>,
+    pub submitted_at: DateTime<Utc>,
+    pub editable_until: DateTime<Utc>,
+    pub auto_approve_after: DateTime<Utc>,
+    pub hospital_approved_at: Option<DateTime<Utc>>,
+    pub revision_requested_at: Option<DateTime<Utc>>,
+    pub revision_notes: Option<String>,
+}
+
+/// Response body for `POST /api/v1/shifts/{shift_id}/clockout`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ClockoutResponse {
+    pub attendance_id: Uuid,
+    pub shift_id: Uuid,
+    pub clockout_at: DateTime<Utc>,
+    pub worked_minutes: i32,
+}
+
+/// Request body for `POST /api/v1/shifts/{shift_id}/handover/revision`.
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+pub struct HandoverRevisionRequest {
+    #[validate(length(min = 1, max = 2000))]
+    pub revision_notes: String,
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2.7 — Mutual ratings (FRS §3.9)
+// ---------------------------------------------------------------------------
+
+/// Sub-scores a worker assigns when rating a hospital (§3.9.4). All four are
+/// 1–5 stars.
+#[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
+pub struct HospitalRatingDimensions {
+    #[validate(range(min = 1, max = 5))]
+    pub staff_support: i16,
+    #[validate(range(min = 1, max = 5))]
+    pub equipment_availability: i16,
+    #[validate(range(min = 1, max = 5))]
+    pub communication: i16,
+    #[validate(range(min = 1, max = 5))]
+    pub payment_timeliness: i16,
+}
+
+/// Request body for `POST /api/v1/shifts/{shift_id}/ratings/worker`.
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+pub struct RateWorkerRequest {
+    #[validate(range(min = 1, max = 5))]
+    pub score: i16,
+    #[validate(length(max = 2000))]
+    pub comment: Option<String>,
+}
+
+/// Request body for `POST /api/v1/shifts/{shift_id}/ratings/hospital`.
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+pub struct RateHospitalRequest {
+    #[validate(range(min = 1, max = 5))]
+    pub score: i16,
+    #[validate(length(max = 2000))]
+    pub comment: Option<String>,
+    #[validate(nested)]
+    pub dimensions: HospitalRatingDimensions,
+}
+
+/// Request body for `PATCH /api/v1/ratings/{rating_id}` — edit within 48h
+/// (BR-F1-50). Accepts the worker- or hospital-rating shape; fields not
+/// applicable to the rating's `ratee_kind` are ignored.
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+pub struct EditRatingRequest {
+    #[validate(range(min = 1, max = 5))]
+    pub score: Option<i16>,
+    #[validate(length(max = 2000))]
+    pub comment: Option<String>,
+    #[validate(nested)]
+    pub dimensions: Option<HospitalRatingDimensions>,
+}
+
+// ---------------------------------------------------------------------------
+// Tier 2.1 — Worker discovery (FRS §3.3)
+// ---------------------------------------------------------------------------
+
+/// A shift card returned by `GET /api/v1/worker/shifts/nearby`.
+/// Sorted by (urgency rank desc, distance asc).
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct NearbyShiftCard {
+    pub shift_id: Uuid,
+    pub hospital_id: Uuid,
+    pub hospital_name: Option<String>,
+    pub role_title: String,
+    pub specialty: Option<String>,
+    pub shift_type: ShiftType,
+    pub priority: ShiftPriority,
+    pub scheduled_start: DateTime<Utc>,
+    pub duration_hours: f32,
+    pub pay_type: PayType,
+    pub rate_kobo_per_hour: Option<i64>,
+    pub fixed_rate_kobo: Option<i64>,
+    pub stat_bonus_kobo: Option<i64>,
+    /// Distance from the worker in km. `None` if the worker has no recorded
+    /// location, or for virtual shifts where distance is irrelevant.
+    pub distance_km: Option<f64>,
+    /// Whether the caller has already expressed interest in this shift.
+    pub interest_expressed: bool,
+}
+
+/// One row in `GET /api/v1/worker/shifts/my-applications`.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct MyApplicationEntry {
+    pub shift_id: Uuid,
+    pub hospital_id: Uuid,
+    pub role_title: String,
+    pub scheduled_start: DateTime<Utc>,
+    pub shift_status: ShiftStatus,
+    /// Kind of record this is: "interest" or "application".
+    pub kind: String,
+    /// For applications, the application status (Submitted/Accepted/etc).
+    pub application_status: Option<ShiftApplicationStatus>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// API response for a stored rating.
+#[derive(Debug, Clone, Serialize, ToSchema, FromRow)]
+pub struct RatingResponse {
+    pub id: Uuid,
+    pub shift_id: Uuid,
+    pub ratee_id: Uuid,
+    pub ratee_kind: String,
+    pub score: i16,
+    pub dimensions: Option<serde_json::Value>,
+    pub comment: Option<String>,
+    pub is_anonymous: bool,
+    pub editable_until: DateTime<Utc>,
+    pub window_closes_at: DateTime<Utc>,
+    pub created_at: DateTime<Utc>,
 }

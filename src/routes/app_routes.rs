@@ -1,7 +1,11 @@
 use axum::{
-    routing::{get, patch, post},
+    middleware::from_fn,
+    routing::{delete, get, patch, post},
     Router,
 };
+
+use crate::middlewares::require_role;
+use crate::models::user::UserRole;
 use sqlx::PgPool;
 use std::sync::Arc;
 use tower_http::{
@@ -90,71 +94,121 @@ pub struct AppState {
         crate::handlers::shifts::express_interest,
         crate::handlers::shifts::apply_for_shift,
         crate::handlers::shifts::list_shift_applications,
+        crate::handlers::shifts::list_interested_for_shift,
+        crate::handlers::shifts::offer_shift,
+        crate::handlers::shifts::accept_shift,
+        crate::handlers::shifts::decline_shift,
+        crate::handlers::shifts::clock_in,
+        crate::handlers::shifts::submit_handover,
+        crate::handlers::shifts::clock_out,
+        crate::handlers::shifts::request_handover_revision,
+        crate::handlers::shifts::rate_worker,
+        crate::handlers::shifts::rate_hospital,
+        crate::handlers::shifts::edit_rating,
+        crate::handlers::shifts::list_nearby_shifts,
+        crate::handlers::shifts::list_my_applications,
+        crate::handlers::shifts::withdraw_interest,
+        crate::handlers::shifts::bookmark_shift,
+        crate::handlers::shifts::unbookmark_shift,
+        crate::handlers::shifts::dismiss_shift,
+        crate::handlers::shifts::request_clockin_approval,
+        crate::handlers::shifts::approve_clockin_request,
+        crate::handlers::shifts::deny_clockin_request,
         crate::handlers::shifts::assign_shift,
         crate::handlers::shifts::cancel_shift,
         crate::handlers::shifts::reschedule_shift,
         crate::handlers::admin::list_hospitals_admin,
         crate::handlers::admin::list_clinicians_admin,
     ),
-    components(schemas(
-        crate::handlers::registration::HospitalRegistrationResponse,
-        crate::handlers::registration::StatusChangeResponse,
-        crate::handlers::registration::ApprovalRequest,
-        crate::handlers::registration::RejectionRequest,
-        crate::handlers::registration::ErrorResponse,
-        crate::handlers::registration::ListHospitalsQuery,
-        crate::handlers::shifts::ShiftPreviewResponse,
-        crate::handlers::shifts::ErrorResponse,
-        crate::handlers::shifts::ShiftListResponse,
-        crate::handlers::shifts::ShiftApplicationsResponse,
-        crate::handlers::shifts::PaginationMetadata,
-        crate::handlers::admin::ClinicianListResponse,
-        crate::handlers::admin::PaginationMetadata,
-        crate::handlers::admin::ListCliniciansQuery,
-        crate::models::admin_registration::HospitalRegistrationRequest,
-        crate::models::admin_registration::Address,
-        crate::models::admin_registration::PaymentDetails,
-        crate::models::admin_registration::PaymentMethodType,
-        crate::models::shift::Shift,
-        crate::models::shift::CreateShiftRequest,
-        crate::models::shift::ShiftStatus,
-        crate::models::shift::ShiftPriority,
-        crate::models::shift::ShiftType,
-        crate::models::shift::RoleCategory,
-        crate::models::shift::PayType,
-        crate::models::shift::ShiftApplication,
-        crate::models::shift::ShiftApplicationRequest,
-        crate::models::shift::ShiftApplicationStatus,
-        crate::models::shift::ShiftApplicationsQuery,
-        crate::models::shift::ShiftListQuery,
-        crate::models::shift::ShiftInterestRequest,
-        crate::models::shift::ShiftAssignRequest,
-        crate::models::shift::ShiftCancelRequest,
-        crate::models::shift::ShiftRescheduleRequest,
-        crate::models::user::UserResponse,
-        crate::models::user::CreateUserRequest,
-        crate::models::user::LoginRequest,
-        crate::models::user::LoginResponse,
-        crate::models::user::EmailLoginRequest,
-        crate::models::user::EmailOtpVerifyRequest,
-        crate::models::user::ForgotPasswordRequest,
-        crate::models::user::ResetPasswordRequest,
-        crate::models::user::RefreshTokenRequest,
-        crate::models::user::LogoutRequest,
-        crate::models::clinician_registration::SendOtpRequest,
-        crate::models::clinician_registration::SendOtpResponse,
-        crate::models::clinician_registration::VerifyOtpRequest,
-        crate::models::clinician_registration::VerifyOtpResponse,
-        crate::models::clinician_registration::CompleteProfileRequest,
-        crate::models::clinician_registration::ProfileResponse,
-        crate::models::clinician_registration::AddBankAccountRequest,
-        crate::models::clinician_registration::BankAccountResponse,
-        crate::models::clinician::ClinicianAdminSummary,
-        crate::services::registration_service::RegistrationStatusResponse,
-        crate::services::registration_service::HospitalListResponse,
-        crate::services::registration_service::HospitalSummary,
-        crate::services::registration_service::PaginationMetadata,
-    )),
+    components(
+        schemas(
+            // Registration
+            crate::handlers::registration::HospitalRegistrationResponse,
+            crate::handlers::registration::StatusChangeResponse,
+            crate::handlers::registration::ApprovalRequest,
+            crate::handlers::registration::RejectionRequest,
+            crate::handlers::registration::ErrorResponse,
+            crate::handlers::registration::ListHospitalsQuery,
+            // Shifts
+            crate::handlers::shifts::ShiftPreviewResponse,
+            crate::handlers::shifts::ErrorResponse,
+            crate::handlers::shifts::ShiftListResponse,
+            crate::handlers::shifts::ShiftApplicationsResponse,
+            crate::handlers::shifts::PaginationMetadata,
+            crate::models::shift::RankedInterestedClinician,
+            crate::models::shift::ShiftOfferRequest,
+            crate::models::shift::ShiftOfferResponse,
+            crate::models::shift::NdprConsent,
+            crate::models::shift::AcceptShiftRequest,
+            crate::models::shift::DeclineShiftRequest,
+            crate::models::shift::ClockinRequest,
+            crate::models::shift::ClockinResponse,
+            crate::models::shift::ClockinMethod,
+            crate::models::shift::SubmitHandoverRequest,
+            crate::models::shift::HandoverResponse,
+            crate::models::shift::ClockoutResponse,
+            crate::models::shift::HandoverRevisionRequest,
+            crate::models::shift::HospitalRatingDimensions,
+            crate::models::shift::RateWorkerRequest,
+            crate::models::shift::RateHospitalRequest,
+            crate::models::shift::EditRatingRequest,
+            crate::models::shift::RatingResponse,
+            crate::models::shift::NearbyShiftCard,
+            crate::models::shift::MyApplicationEntry,
+            crate::models::shift::ClockinApprovalRequest,
+            crate::models::shift::ClockinApprovalDecisionRequest,
+            crate::models::shift::ClockinApprovalRecord,
+            // Admin
+            crate::handlers::admin::ClinicianListResponse,
+            crate::handlers::admin::PaginationMetadata,
+            crate::handlers::admin::ListCliniciansQuery,
+            // Models
+            crate::models::admin_registration::HospitalRegistrationRequest,
+            crate::models::admin_registration::Address,
+            crate::models::admin_registration::PaymentDetails,
+            crate::models::admin_registration::PaymentMethodType,
+            crate::models::shift::Shift,
+            crate::models::shift::CreateShiftRequest,
+            crate::models::shift::ShiftStatus,
+            crate::models::shift::ShiftPriority,
+            crate::models::shift::ShiftType,
+            crate::models::shift::RoleCategory,
+            crate::models::shift::PayType,
+            crate::models::shift::ShiftApplication,
+            crate::models::shift::ShiftApplicationRequest,
+            crate::models::shift::ShiftApplicationStatus,
+            crate::models::shift::ShiftApplicationsQuery,
+            crate::models::shift::ShiftListQuery,
+            crate::models::shift::ShiftInterestRequest,
+            crate::models::shift::ShiftAssignRequest,
+            crate::models::shift::ShiftCancelRequest,
+            crate::models::shift::ShiftRescheduleRequest,
+            crate::models::user::UserResponse,
+            crate::models::user::CreateUserRequest,
+            crate::models::user::LoginRequest,
+            crate::models::user::LoginResponse,
+            crate::models::user::EmailLoginRequest,
+            crate::models::user::EmailOtpVerifyRequest,
+            crate::models::user::ForgotPasswordRequest,
+            crate::models::user::ResetPasswordRequest,
+            crate::models::user::RefreshTokenRequest,
+            crate::models::user::LogoutRequest,
+            crate::models::clinician_registration::SendOtpRequest,
+            crate::models::clinician_registration::SendOtpResponse,
+            crate::models::clinician_registration::VerifyOtpRequest,
+            crate::models::clinician_registration::VerifyOtpResponse,
+            crate::models::clinician_registration::CompleteProfileRequest,
+            crate::models::clinician_registration::ProfileResponse,
+            crate::models::clinician_registration::AddBankAccountRequest,
+            crate::models::clinician_registration::BankAccountResponse,
+            crate::models::clinician::ClinicianAdminSummary,
+            // Services
+            crate::services::registration_service::RegistrationStatusResponse,
+            crate::services::registration_service::HospitalListResponse,
+            crate::services::registration_service::HospitalSummary,
+            crate::services::registration_service::PaginationMetadata,
+        )
+    ),
     info(
         title = "NexusCare Hospital Management API",
         version = "1.0.0",
@@ -182,7 +236,7 @@ pub fn create_router(
     pool: PgPool,
     notification_service: Arc<NotificationService>,
     email_outbox_service: Arc<EmailOutboxService>,
-) -> Router {
+) -> (Router, AppState) {
     let cors = CorsLayer::new()
         .allow_origin(Any)
         .allow_methods(Any)
@@ -279,48 +333,182 @@ pub fn create_router(
         .route("/api/v1/hospitals/create", post(hospitals::create_hospital))
         .route("/api/v1/hospitals/{id}", get(hospitals::get_hospital))
         .route("/api/v1/hospitals/{id}", patch(hospitals::update_hospital))
-        .route("/api/v1/hospitals/{id}/advance-step", patch(hospitals::advance_registration_step))
-        .route("/api/v1/clinicians/otp/send", post(clinician_registration::send_otp))
-        .route("/api/v1/clinicians/otp/verify", post(clinician_registration::verify_otp))
-        .route("/api/v1/clinicians/{clinician_id}/profile", axum::routing::put(clinician_registration::complete_profile))
-        .route("/api/v1/clinicians/{clinician_id}/bank-account", post(clinician_registration::add_bank_account))
-        .route("/api/v1/shifts", post(shifts::create_shift))
-        .route("/api/v1/shifts", get(shifts::list_shifts))
-        .route("/api/v1/shifts/preview", post(shifts::preview_shift))
+        .route(
+            "/api/v1/hospitals/{id}/advance-step",
+            patch(hospitals::advance_registration_step),
+        )
+        // Clinician registration
+        .route(
+            "/api/v1/clinicians/otp/send",
+            post(clinician_registration::send_otp),
+        )
+        .route(
+            "/api/v1/clinicians/otp/verify",
+            post(clinician_registration::verify_otp),
+        )
+        .route(
+            "/api/v1/clinicians/{clinician_id}/profile",
+            axum::routing::put(clinician_registration::complete_profile),
+        )
+        .route(
+            "/api/v1/clinicians/{clinician_id}/bank-account",
+            post(clinician_registration::add_bank_account),
+        )
+        // Shifts — gated per FRS v2.0 §2.2 permission matrix.
+        //
+        // HospitalAdmin/SuperAdmin: create, list-all, preview, view applications,
+        //                           assign, cancel, reschedule.
+        // HealthWorker: express interest, apply.
+        // Anyone authenticated: view a single shift's details (worker discovery).
+        .route(
+            "/api/v1/shifts",
+            post(shifts::create_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
+            "/api/v1/shifts",
+            get(shifts::list_shifts)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
+            "/api/v1/shifts/preview",
+            post(shifts::preview_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
         .route("/api/v1/shifts/{shift_id}", get(shifts::get_shift))
-        .route("/api/v1/shifts/{shift_id}/interest", post(shifts::express_interest))
-        .route("/api/v1/shifts/{shift_id}/apply", post(shifts::apply_for_shift))
-        .route("/api/v1/shifts/{shift_id}/applications", get(shifts::list_shift_applications))
-        .route("/api/v1/shifts/{shift_id}/assign", post(shifts::assign_shift))
-        .route("/api/v1/shifts/{shift_id}/cancel", post(shifts::cancel_shift))
-        .route("/api/v1/shifts/{shift_id}/reschedule", post(shifts::reschedule_shift))
-        // ML pipeline ingestion
-        .route("/api/v1/ingest/patient", post(pipeline::ingest_patient))
-        .route("/api/v1/ingest/process-pending", post(pipeline::process_pending))
-        .route("/api/v1/ingest/enrich-all", post(pipeline::enrich_all))
-        .route("/api/v1/ingest/audit/{id}", get(pipeline::audit_blob))
-        // Real-time SSE event stream
-        .route("/api/v1/pipeline/events", get(pipeline_gateway::pipeline_events))
-        // ML re-assess
-        .route("/api/v1/pipeline/re-assess/{patient_id}", post(feedback::re_assess))
-        // ML service health proxy
-        .route("/api/v1/ml/health", get(ml_health::ml_health))
-        // Patient dashboards
-        .route("/api/v1/patients", get(patients::list_patients))
-        .route("/api/v1/patients/queue/high-risk", get(patients::high_risk_queue))
-        .route("/api/v1/patients/alerts/outbreak", get(patients::outbreak_alerts))
-        .route("/api/v1/patients/admin/stats", get(patients::pipeline_stats))
-        .route("/api/v1/patients/{id}", get(patients::get_patient))
-        .route("/api/v1/patients/{id}/assessment", get(patients::get_assessment))
-        // Feedback loop
-        .route("/api/v1/feedback/correction", post(feedback::record_correction))
-        .route("/api/v1/feedback/outcome", post(feedback::record_outcome))
-        .route("/api/v1/feedback/re-assess/{patient_id}", post(feedback::re_assess))
+        .route(
+            "/api/v1/shifts/{shift_id}/interest",
+            post(shifts::express_interest)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/apply",
+            post(shifts::apply_for_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/applications",
+            get(shifts::list_shift_applications)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/interested",
+            get(shifts::list_interested_for_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/offer",
+            post(shifts::offer_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/accept",
+            post(shifts::accept_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/decline",
+            post(shifts::decline_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/clockin",
+            post(shifts::clock_in)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/handover",
+            post(shifts::submit_handover)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/clockout",
+            post(shifts::clock_out)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/handover/revision",
+            post(shifts::request_handover_revision)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/ratings/worker",
+            post(shifts::rate_worker)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/ratings/hospital",
+            post(shifts::rate_hospital)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/ratings/{rating_id}",
+            patch(shifts::edit_rating),
+        )
+        .route(
+            "/api/v1/worker/shifts/nearby",
+            get(shifts::list_nearby_shifts)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/worker/shifts/my-applications",
+            get(shifts::list_my_applications)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/interest",
+            delete(shifts::withdraw_interest)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/bookmark",
+            post(shifts::bookmark_shift)
+                .delete(shifts::unbookmark_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/dismiss",
+            post(shifts::dismiss_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/clockin/approval-request",
+            post(shifts::request_clockin_approval)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/clockin-approvals/{request_id}/approve",
+            post(shifts::approve_clockin_request)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
+            "/api/v1/clockin-approvals/{request_id}/deny",
+            post(shifts::deny_clockin_request)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/assign",
+            post(shifts::assign_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/cancel",
+            post(shifts::cancel_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/reschedule",
+            post(shifts::reschedule_shift)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
         .layer(TraceLayer::new_for_http())
         .layer(cors)
-        .with_state(state);
+        .with_state(state.clone());
 
-    Router::new()
+    // Merge with Swagger UI
+    let router = Router::new()
         .merge(SwaggerUi::new("/api/docs").url("/api/openapi.json", ApiDoc::openapi()))
-        .merge(api_router)
+        .merge(api_router);
+
+    (router, state)
 }

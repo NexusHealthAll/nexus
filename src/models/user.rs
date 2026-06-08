@@ -12,8 +12,8 @@ use utoipa::ToSchema;
 pub enum UserRole {
     /// Hospital administrator
     HospitalAdmin,
-    /// Clinical staff member
-    Staff,
+    /// Clinical staff member — health worker (clinician)
+    HealthWorker,
     /// NexusCare platform super-admin
     SuperAdmin,
 }

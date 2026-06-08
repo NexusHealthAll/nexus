@@ -1,4 +1,16 @@
+use chrono::{DateTime, Timelike, Utc};
 use validator::ValidationError;
+
+/// F1-F05: Validates that a shift start time falls on a 15-minute boundary
+/// (i.e. minute ∈ {0, 15, 30, 45} and seconds/sub-seconds are zero).
+pub fn validate_15min_boundary(ts: &DateTime<Utc>) -> Result<(), ValidationError> {
+    if ts.second() != 0 || ts.nanosecond() != 0 || ts.minute() % 15 != 0 {
+        let mut error = ValidationError::new("invalid_time_boundary");
+        error.message = Some("Start time must be on a 15-minute boundary".into());
+        return Err(error);
+    }
+    Ok(())
+}
 
 /// Validates email format according to RFC 5322
 /// This is a simplified validator - for production use a proper RFC 5322 parser

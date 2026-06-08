@@ -279,7 +279,7 @@ impl AuthService {
         let redirect_to = match user.role {
             UserRole::SuperAdmin => "/dashboard/super-admin",
             UserRole::HospitalAdmin => "/dashboard/hospital",
-            UserRole::Staff => "/dashboard/staff",
+            UserRole::HealthWorker => "/dashboard/staff",
         }
         .to_string();
 
