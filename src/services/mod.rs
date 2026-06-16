@@ -1,37 +1,40 @@
-pub mod geocoding;
-pub mod paystack;
-pub mod encryption;
-pub mod location_service;
-pub mod payment_service;
 pub mod audit_service;
-pub mod notification_service;
-pub mod registration_service;
-pub mod clinician_registration_service;
 pub mod auth_service;
-pub mod shift_service;
+pub mod clinician_registration_service;
+pub mod distance_service;
 pub mod email_outbox_service;
 pub mod email_templates;
-pub mod bronze_service;
-pub mod silver_service;
-pub mod gold_service;
-pub mod ml_service;
-pub mod pipeline_service;
-pub mod pipeline_event_service;
+pub mod encryption;
+pub mod geocoding;
+pub mod here_maps;
+pub mod identity_verification_service;
+pub mod location_service;
+pub mod notification_service;
+pub mod payout_service;
+pub mod registration_service;
+pub mod safehaven;
+pub mod shift_service;
+pub mod wallet_service;
 
-pub use geocoding::{GeocodingClient, GeocodingError};
-pub use paystack::{PaystackClient, PaystackError};
-pub use encryption::{EncryptionService, EncryptionError};
-pub use location_service::{LocationService, LocationServiceError};
-pub use payment_service::{PaymentService, PaymentServiceError};
 pub use audit_service::{AuditService, AuditServiceError, RegistrationDetails};
-pub use notification_service::{NotificationService, NotificationError};
-pub use registration_service::{RegistrationService, RegistrationError, HospitalRegistrationResult, RegistrationStatusResponse};
-pub use clinician_registration_service::{ClinicianRegistrationService, ClinicianRegistrationError};
+pub use clinician_registration_service::{
+    ClinicianRegistrationError, ClinicianRegistrationService,
+};
+pub use email_outbox_service::{EmailOutboxError, EmailOutboxService, EmailOutboxWorker};
+pub use encryption::{EncryptionError, EncryptionService};
+pub use geocoding::{GeocodingClient, GeocodingError};
+pub use identity_verification_service::{
+    IdentityError, IdentityKind, IdentityOwner, IdentityVerificationService,
+};
+pub use location_service::{LocationService, LocationServiceError};
+pub use notification_service::{NotificationError, NotificationService};
+pub use payout_service::{PayoutService, PayoutServiceError};
+pub use registration_service::{
+    HospitalRegistrationResult, RegistrationError, RegistrationService, RegistrationStatusResponse,
+};
+pub use safehaven::{
+    ResolvedBankAccount, SafeHavenClient, SafeHavenError, SubAccount, TransferReceipt,
+    TransferStatus, VirtualAccount,
+};
 pub use shift_service::{ShiftService, ShiftServiceError};
-pub use email_outbox_service::{EmailOutboxService, EmailOutboxError, EmailOutboxWorker};
-pub use bronze_service::BronzeService;
-pub use silver_service::SilverService;
-pub use gold_service::GoldService;
-pub use ml_service::MlService;
-pub use pipeline_service::PipelineService;
-pub use pipeline_event_service::PipelineEventService;
+pub use wallet_service::{WalletService, WalletServiceError, WebhookOutcome};

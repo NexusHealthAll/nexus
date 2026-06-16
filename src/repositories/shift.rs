@@ -1,15 +1,14 @@
+use chrono::{Duration, Utc};
 use sqlx::{FromRow, PgPool, Postgres, Transaction};
 use uuid::Uuid;
-use chrono::{Duration, Utc};
 
-use crate::models::shift::{
-    Shift, ShiftStatus, CreateShiftRequest, PayType, ShiftApplication,
-    ShiftApplicationStatus, ShiftPriority, ShiftType,
-};
 use crate::models::registration::RegistrationStatus;
+use crate::models::shift::{
+    CreateShiftRequest, PayType, Shift, ShiftApplication, ShiftApplicationStatus, ShiftPriority,
+    ShiftStatus, ShiftType,
+};
 
-/// Raw row backing the Tier 2.3 ranking query. Internal to the repo —
-/// the service layer turns these into `RankedInterestedClinician`.
+/// Raw row backing the ranking query. Internal to the repo —
 #[derive(Debug, Clone, FromRow)]
 pub struct InterestedClinicianRow {
     pub clinician_id: Uuid,
@@ -25,9 +24,7 @@ pub struct InterestedClinicianRow {
     pub clinician_lng: Option<f64>,
 }
 
-/// Raw row backing the Tier 3.2 eligibility query. The service decides
-/// whether the clinician is within the broadcast radius (in-person shifts only)
-/// before contacting them.
+/// Raw row backing the eligibility query. The service decides
 #[derive(Debug, Clone, FromRow)]
 pub struct EligibleClinicianRow {
     pub clinician_id: Uuid,
@@ -38,8 +35,7 @@ pub struct EligibleClinicianRow {
     pub longitude: Option<f64>,
 }
 
-/// Raw row backing the Tier 2.1 "Shifts Near You" query. Distance and final
-/// sort happen in the service layer.
+/// Raw row backing the "Shifts Near You" query. Distance and final
 #[derive(Debug, Clone, FromRow)]
 pub struct NearbyShiftRow {
     pub shift_id: Uuid,
@@ -88,7 +84,10 @@ impl ShiftRepository {
     }
 
     /// Get hospital name by ID
-    pub async fn get_hospital_name(&self, hospital_id: Uuid) -> Result<Option<String>, sqlx::Error> {
+    pub async fn get_hospital_name(
+        &self,
+        hospital_id: Uuid,
+    ) -> Result<Option<String>, sqlx::Error> {
         sqlx::query_scalar::<_, String>(
             r#"
             SELECT name
@@ -135,7 +134,7 @@ impl ShiftRepository {
     }
 
     /// Resolve `clinicians.id` from the authenticated user's `users.id`.
-    /// Returns `None` if the caller has no clinician profile.
+
     pub async fn find_clinician_id_for_user(
         &self,
         user_id: Uuid,
@@ -150,8 +149,8 @@ impl ShiftRepository {
         .await
     }
 
-    /// Get the hospital's first registered location coordinates, for distance
-    /// calculations in the ranking algorithm (§3.4.3) and clock-in geofencing (§3.6).
+    /// Get the hospital's first registered location coordinates
+
     pub async fn get_hospital_coordinates(
         &self,
         hospital_id: Uuid,
@@ -170,16 +169,7 @@ impl ShiftRepository {
         .await
     }
 
-    /// Tier 2.3 — fetch interested clinicians for a shift along with the data
-    /// needed to score them (rating, completed_shifts, acceptance_rate,
-    /// location). The caller computes haversine distance and the weighted
-    /// score in Rust. Returns rows in `expressed_at ASC` order — the caller
-    /// sorts by score.
-    ///
-    /// Tuple layout:
-    /// `(clinician_id, first_name, last_name, rating, rating_count,
-    ///   completed_shifts, accepts, declines, expires, clinician_lat,
-    ///   clinician_lng)`
+    /// fetch interested clinicians for a shift along with the data
     pub async fn list_interested_with_stats(
         &self,
         shift_id: Uuid,
@@ -214,9 +204,8 @@ impl ShiftRepository {
         .await
     }
 
-    /// Tier 2.4 — Fetch a pending offer for `(shift, clinician)` in `offered`
-    /// status. Returns `(assignment_id, expires_at)` so the service can detect
-    /// expired offers without a separate round-trip.
+    /// Fetch a pending offer for `(shift, clinician)` in `offered`
+
     pub async fn get_pending_offer(
         &self,
         shift_id: Uuid,
@@ -236,7 +225,8 @@ impl ShiftRepository {
         .await
     }
 
-    /// Tier 2.4 — Accept an offer inside a transaction.
+    /// Accept an offer inside a transaction
+
     pub async fn accept_offer_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -247,8 +237,7 @@ impl ShiftRepository {
             r#"
             UPDATE shift_assignments
                SET status        = 'accepted',
-                   responded_at  = NOW(),
-                   ndpr_consent  = $2,
+                   responded_at  = NOW(),ndpr_consent  = $2,
                    updated_at    = NOW()
              WHERE id = $1 AND status = 'offered'
             "#,
@@ -260,9 +249,8 @@ impl ShiftRepository {
         Ok(())
     }
 
-    /// Tier 2.4 — Cancel sibling offers when one is accepted. Marks every
-    /// other `offered` row for the same shift as `expired` so the hospital
-    /// sees the offer was superseded.
+    /// Cancel sibling offers when one is accepted. Marks every
+
     pub async fn cancel_sibling_offers_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -273,8 +261,7 @@ impl ShiftRepository {
             r#"
             UPDATE shift_assignments
                SET status       = 'expired',
-                   responded_at = NOW(),
-                   updated_at   = NOW()
+                   responded_at = NOW(),updated_at   = NOW()
              WHERE shift_id = $1
                AND id      <> $2
                AND status   = 'offered'
@@ -287,7 +274,8 @@ impl ShiftRepository {
         Ok(())
     }
 
-    /// Tier 2.4 — Mark the shift assigned and stamp the chosen clinician.
+    /// Mark the shift assigned and stamp the chosen clinician
+
     pub async fn assign_shift_to_clinician_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -310,7 +298,8 @@ impl ShiftRepository {
         Ok(())
     }
 
-    /// Tier 2.4 — Decline an offer.
+    /// Decline an offer
+
     pub async fn decline_offer(
         &self,
         assignment_id: Uuid,
@@ -320,8 +309,7 @@ impl ShiftRepository {
             r#"
             UPDATE shift_assignments
                SET status         = 'declined',
-                   responded_at   = NOW(),
-                   decline_reason = $2,
+                   responded_at   = NOW(),decline_reason = $2,
                    updated_at     = NOW()
              WHERE id = $1 AND status = 'offered'
             "#,
@@ -333,9 +321,8 @@ impl ShiftRepository {
         Ok(())
     }
 
-    /// Tier 2.4 — BR-F1-26 conflict check. Returns true if the clinician has
-    /// another accepted/assigned shift whose window overlaps the candidate
-    /// window. Compares against shifts in statuses that block double-booking.
+    /// conflict check. Returns true if the clinician has
+
     pub async fn has_conflicting_shift(
         &self,
         clinician_id: Uuid,
@@ -360,10 +347,8 @@ impl ShiftRepository {
         Ok(count > 0)
     }
 
-    /// Tier 2.3 — Create a `shift_assignments` row marking an offer to a
-    /// specific clinician. Expires at `expires_at` (30 minutes by spec).
-    /// Returns 409-style `unique_violation` if the same clinician has
-    /// already been offered this shift (BR-F1-24).
+    /// Create a `shift_assignments` row marking an offer to a
+
     pub async fn create_assignment_offer(
         &self,
         shift_id: Uuid,
@@ -385,8 +370,8 @@ impl ShiftRepository {
         Ok(id)
     }
 
-    /// Tier 3.2 — broadcast radius (km) for this hospital's primary location
-    /// (default 5km per the schema).
+    /// broadcast radius (km) for this hospital's primary location
+
     pub async fn get_broadcast_radius_km(
         &self,
         hospital_id: Uuid,
@@ -405,8 +390,8 @@ impl ShiftRepository {
         .await
     }
 
-    /// Tier 2.5 — clock_in_radius_meters for this hospital's primary location
-    /// (defaults to 100m per the migration).
+    /// clock_in_radius_meters for this hospital's primary location
+
     pub async fn get_clock_in_radius_meters(
         &self,
         hospital_id: Uuid,
@@ -425,9 +410,8 @@ impl ShiftRepository {
         .await
     }
 
-    /// Tier 2.5 — Record a clock-in inside the create-shift-in-progress
-    /// transaction. Inserts a `shift_attendance` row and flips the shift to
-    /// `in_progress`. Caller must have validated all preconditions.
+    /// Record a clock-in inside the create-shift-in-progress
+
     pub async fn record_clockin_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -486,12 +470,8 @@ impl ShiftRepository {
         Ok(id)
     }
 
-    /// Tier 2.6 — Upsert a handover row for the given shift.
-    /// On first submission, creates the row with `submitted_at = NOW()`,
-    /// `editable_until = NOW() + 1h`, `auto_approve_after = NOW() + 48h`.
-    /// On resubmission within `editable_until`, updates the content fields
-    /// while keeping the original `submitted_at` (so the 48h auto-approve
-    /// clock is not reset).
+    /// Upsert a handover row for the given shift.
+
     pub async fn upsert_handover(
         &self,
         shift_id: Uuid,
@@ -510,7 +490,7 @@ impl ShiftRepository {
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6,
-                NOW(), NOW() + INTERVAL '1 hour', NOW() + INTERVAL '48 hours'
+                NOW, NOW() + INTERVAL '1 hour', NOW() + INTERVAL '48 hours'
             )
             ON CONFLICT (shift_id) DO UPDATE
               SET patients_seen     = EXCLUDED.patients_seen,
@@ -536,7 +516,8 @@ impl ShiftRepository {
         .await
     }
 
-    /// Tier 2.6 — Fetch the existing handover row, if any.
+    /// Fetch the existing handover row, if any
+
     pub async fn get_handover(
         &self,
         shift_id: Uuid,
@@ -556,8 +537,8 @@ impl ShiftRepository {
         .await
     }
 
-    /// Tier 2.6 — Read the current clock-in time for a shift, used to compute
-    /// worked_minutes and the 24h revision deadline.
+    /// Read the current clock-in time for a shift, used to compute
+
     pub async fn get_attendance_clockin(
         &self,
         shift_id: Uuid,
@@ -573,7 +554,8 @@ impl ShiftRepository {
         .map(|opt| opt.flatten())
     }
 
-    /// Tier 2.6 — Read clockout_at to enforce the 24-hour revision window.
+    /// Read clockout_at to enforce the 24-hour revision window
+
     pub async fn get_attendance_clockout(
         &self,
         shift_id: Uuid,
@@ -589,8 +571,8 @@ impl ShiftRepository {
         .map(|opt| opt.flatten())
     }
 
-    /// Tier 2.6 — Record clockout inside a transaction and flip the shift
-    /// to 'completed'. Returns `(attendance_id, worked_minutes)`.
+    /// Record clockout inside a transaction and flip the shift
+
     pub async fn record_clockout_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -600,8 +582,7 @@ impl ShiftRepository {
         let id: Uuid = sqlx::query_scalar(
             r#"
             UPDATE shift_attendance
-               SET clockout_at    = NOW(),
-                   worked_minutes = $2,
+               SET clockout_at    = NOW(),worked_minutes = $2,
                    updated_at     = NOW()
              WHERE shift_id = $1
              RETURNING id
@@ -626,8 +607,8 @@ impl ShiftRepository {
         Ok(id)
     }
 
-    /// Tier 2.6 — Request a handover revision (hospital-side, within 24h of
-    /// clock-out per BR-F1-37). Caller validates the time window.
+    /// Request a handover revision (hospital-side, within 24h of
+
     pub async fn request_handover_revision(
         &self,
         shift_id: Uuid,
@@ -636,8 +617,7 @@ impl ShiftRepository {
         sqlx::query(
             r#"
             UPDATE shift_handovers
-               SET revision_requested_at = NOW(),
-                   revision_notes        = $2,
+               SET revision_requested_at = NOW(),revision_notes        = $2,
                    updated_at            = NOW()
              WHERE shift_id = $1
             "#,
@@ -649,9 +629,24 @@ impl ShiftRepository {
         Ok(())
     }
 
-    /// Tier 2.7 — Insert a rating row. `window_closes_at` is the 7-day cap
-    /// (BR-F1-46); `editable_until` is the 48-hour edit window (BR-F1-50).
-    /// Caller validates time windows and uniqueness before calling.
+    /// Hospital explicitly approves the handover, unlocking the
+
+    pub async fn approve_handover(&self, shift_id: Uuid) -> Result<u64, sqlx::Error> {
+        let res = sqlx::query(
+            r#"
+            UPDATE shift_handovers
+               SET hospital_approved_at = NOW(),updated_at           = NOW()
+             WHERE shift_id = $1
+               AND hospital_approved_at IS NULL
+            "#,
+        )
+        .bind(shift_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(res.rows_affected())
+    }
+
+    /// Insert a rating row. `window_closes_at` is the 7-day cap
     #[allow(clippy::too_many_arguments)]
     pub async fn insert_rating(
         &self,
@@ -695,8 +690,8 @@ impl ShiftRepository {
         .await
     }
 
-    /// Tier 2.7 — Edit a rating within the 48h window. Caller validates the
-    /// window. `dimensions` is fully replaced when provided.
+    /// Edit a rating within the 48h window. Caller validates the
+
     pub async fn update_rating(
         &self,
         rating_id: Uuid,
@@ -726,17 +721,29 @@ impl ShiftRepository {
         .await
     }
 
-    /// Tier 2.7 — Fetch a rating by id (for the edit handler's auth check).
-    /// Returns `(rating, rater_user_id)` so we can verify the caller owns it.
+    /// Fetch a rating by id (for the edit handler's auth check).
+
     pub async fn get_rating_for_edit(
         &self,
         rating_id: Uuid,
     ) -> Result<Option<(crate::models::shift::RatingResponse, Uuid)>, sqlx::Error> {
-        let row = sqlx::query_as::<_, (
-            Uuid, Uuid, Uuid, String, i16, Option<serde_json::Value>,
-            Option<String>, bool, chrono::DateTime<chrono::Utc>,
-            chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>, Uuid,
-        )>(
+        let row = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                Uuid,
+                Uuid,
+                String,
+                i16,
+                Option<serde_json::Value>,
+                Option<String>,
+                bool,
+                chrono::DateTime<chrono::Utc>,
+                chrono::DateTime<chrono::Utc>,
+                chrono::DateTime<chrono::Utc>,
+                Uuid,
+            ),
+        >(
             r#"
             SELECT id, shift_id, ratee_id, ratee_kind::text,
                    score, dimensions, comment, is_anonymous,
@@ -749,26 +756,28 @@ impl ShiftRepository {
         .fetch_optional(&self.pool)
         .await?;
 
-        Ok(row.map(|t| (
-            crate::models::shift::RatingResponse {
-                id: t.0,
-                shift_id: t.1,
-                ratee_id: t.2,
-                ratee_kind: t.3,
-                score: t.4,
-                dimensions: t.5,
-                comment: t.6,
-                is_anonymous: t.7,
-                editable_until: t.8,
-                window_closes_at: t.9,
-                created_at: t.10,
-            },
-            t.11,
-        )))
+        Ok(row.map(|t| {
+            (
+                crate::models::shift::RatingResponse {
+                    id: t.0,
+                    shift_id: t.1,
+                    ratee_id: t.2,
+                    ratee_kind: t.3,
+                    score: t.4,
+                    dimensions: t.5,
+                    comment: t.6,
+                    is_anonymous: t.7,
+                    editable_until: t.8,
+                    window_closes_at: t.9,
+                    created_at: t.10,
+                },
+                t.11,
+            )
+        }))
     }
 
-    /// Tier 2.7 — Recompute the clinician's cached average rating after a
-    /// rating insert/edit. Runs inside the same tx as the rating change.
+    /// Recompute the clinician's cached average rating after a
+
     pub async fn recompute_clinician_rating_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -799,11 +808,8 @@ impl ShiftRepository {
         Ok(())
     }
 
-    /// Tier 2.1 — Discover open shifts for a worker.
-    ///
-    /// Returns one row per open shift along with the hospital coords, the
-    /// clinician's own coords (if any), and whether the worker has already
-    /// expressed interest. Distance + sort happen in the service.
+    /// Discover open shifts for a worker.
+
     pub async fn list_open_shifts_for_worker(
         &self,
         clinician_id: Uuid,
@@ -849,13 +855,23 @@ impl ShiftRepository {
         .await
     }
 
-    /// Tier 2.1 — List a clinician's expressed interests + formal applications
-    /// across all shifts (the "My Applications" tab, §3.3.6).
+    /// List a clinician's expressed interests + formal applications
+
     pub async fn list_my_applications(
         &self,
         clinician_id: Uuid,
     ) -> Result<Vec<crate::models::shift::MyApplicationEntry>, sqlx::Error> {
-        let interests = sqlx::query_as::<_, (Uuid, Uuid, String, chrono::DateTime<chrono::Utc>, ShiftStatus, chrono::DateTime<chrono::Utc>)>(
+        let interests = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                Uuid,
+                String,
+                chrono::DateTime<chrono::Utc>,
+                ShiftStatus,
+                chrono::DateTime<chrono::Utc>,
+            ),
+        >(
             r#"
             SELECT s.id, s.hospital_id, s.role_title, s.scheduled_start,
                    s.status AS "status: _", si.expressed_at AS created_at
@@ -868,7 +884,18 @@ impl ShiftRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        let applications = sqlx::query_as::<_, (Uuid, Uuid, String, chrono::DateTime<chrono::Utc>, ShiftStatus, ShiftApplicationStatus, chrono::DateTime<chrono::Utc>)>(
+        let applications = sqlx::query_as::<
+            _,
+            (
+                Uuid,
+                Uuid,
+                String,
+                chrono::DateTime<chrono::Utc>,
+                ShiftStatus,
+                ShiftApplicationStatus,
+                chrono::DateTime<chrono::Utc>,
+            ),
+        >(
             r#"
             SELECT s.id, s.hospital_id, s.role_title, s.scheduled_start,
                    s.status AS "status: _",
@@ -885,28 +912,31 @@ impl ShiftRepository {
 
         let mut rows: Vec<crate::models::shift::MyApplicationEntry> = interests
             .into_iter()
-            .map(|(sid, hid, title, start, status, created)| crate::models::shift::MyApplicationEntry {
-                shift_id: sid,
-                hospital_id: hid,
-                role_title: title,
-                scheduled_start: start,
-                shift_status: status,
-                kind: "interest".to_string(),
-                application_status: None,
-                created_at: created,
+            .map(|(sid, hid, title, start, status, created)| {
+                crate::models::shift::MyApplicationEntry {
+                    shift_id: sid,
+                    hospital_id: hid,
+                    role_title: title,
+                    scheduled_start: start,
+                    shift_status: status,
+                    kind: "interest".to_string(),
+                    application_status: None,
+                    created_at: created,
+                }
             })
             .collect();
-
         rows.extend(applications.into_iter().map(
-            |(sid, hid, title, start, status, app_status, created)| crate::models::shift::MyApplicationEntry {
-                shift_id: sid,
-                hospital_id: hid,
-                role_title: title,
-                scheduled_start: start,
-                shift_status: status,
-                kind: "application".to_string(),
-                application_status: Some(app_status),
-                created_at: created,
+            |(sid, hid, title, start, status, app_status, created)| {
+                crate::models::shift::MyApplicationEntry {
+                    shift_id: sid,
+                    hospital_id: hid,
+                    role_title: title,
+                    scheduled_start: start,
+                    shift_status: status,
+                    kind: "application".to_string(),
+                    application_status: Some(app_status),
+                    created_at: created,
+                }
             },
         ));
 
@@ -915,8 +945,8 @@ impl ShiftRepository {
         Ok(rows)
     }
 
-    /// Tier 2.2 — Withdraw a previously expressed interest. Returns the
-    /// number of rows deleted so the caller can detect "no such interest".
+    /// Withdraw a previously expressed interest. Returns the
+
     pub async fn withdraw_interest(
         &self,
         shift_id: Uuid,
@@ -935,7 +965,8 @@ impl ShiftRepository {
         Ok(result.rows_affected())
     }
 
-    /// Tier 2.2 — Insert a bookmark. Idempotent via the unique constraint.
+    /// Insert a bookmark. Idempotent via the unique constraint
+
     pub async fn bookmark_shift(
         &self,
         shift_id: Uuid,
@@ -955,8 +986,8 @@ impl ShiftRepository {
         Ok(())
     }
 
-    /// Tier 2.2 — Remove a bookmark. Returns rows-affected so the caller can
-    /// report "not bookmarked" if needed.
+    /// Remove a bookmark. Returns rows-affected so the caller can
+
     pub async fn unbookmark_shift(
         &self,
         shift_id: Uuid,
@@ -975,8 +1006,8 @@ impl ShiftRepository {
         Ok(result.rows_affected())
     }
 
-    /// Tier 2.2 — Record a dismissal so the shift no longer appears in this
-    /// clinician's nearby feed. Idempotent.
+    /// Record a dismissal so the shift no longer appears in this
+
     pub async fn dismiss_shift(
         &self,
         shift_id: Uuid,
@@ -996,17 +1027,8 @@ impl ShiftRepository {
         Ok(())
     }
 
-    /// Tier 3.2 — Find clinicians eligible to receive a broadcast for the
-    /// given shift. SQL filters:
-    ///   * `clinicians.availability = 'available_now'` and `is_active = TRUE`
-    ///     and `is_verified = TRUE`
-    ///   * specialty ∈ `allowed_specialties` (caller-derived from the shift's
-    ///     `RoleCategory`)
-    ///   * not currently in an active (`in_progress`) shift
-    ///   * not blocked by the hospital — placeholder, no block table yet, so
-    ///     always true
-    /// The caller applies the haversine-distance check using each clinician's
-    /// last known location (in-person shifts only).
+    /// Find clinicians eligible to receive a broadcast for the
+
     pub async fn find_eligible_clinicians(
         &self,
         allowed_specialties: &[crate::models::clinician::ClinicalSpecialty],
@@ -1039,8 +1061,8 @@ impl ShiftRepository {
         .await
     }
 
-    /// Tier 3.1 — Insert a `shift_broadcast_records` audit row. `broadcast_by`
-    /// is `None` for cadence-driven re-broadcasts (no user context).
+    /// Insert a `shift_broadcast_records` audit row. `broadcast_by`
+
     pub async fn record_broadcast(
         &self,
         shift_id: Uuid,
@@ -1065,17 +1087,9 @@ impl ShiftRepository {
         Ok(())
     }
 
-    /// Tier 3.1 — Find open shifts that are due for re-broadcast per their
-    /// urgency cadence (BR-F1-11..14).
-    ///   * STAT every 15 min
-    ///   * Urgent every 30 min
-    ///   * Normal / Scheduled: broadcast once, no re-broadcast
-    /// "Last broadcast" is taken from the most recent `shift_broadcast_records`
-    /// row for the shift; if there is none, the shift is treated as
-    /// "ready now" (covers the first-broadcast case too).
-    pub async fn find_shifts_due_for_rebroadcast(
-        &self,
-    ) -> Result<Vec<Shift>, sqlx::Error> {
+    /// Find open shifts that are due for re-broadcast per their
+
+    pub async fn find_shifts_due_for_rebroadcast(&self) -> Result<Vec<Shift>, sqlx::Error> {
         sqlx::query_as::<_, Shift>(
             r#"
             SELECT s.id, s.hospital_id, s.role_category, s.role_title, s.specialty,
@@ -1108,21 +1122,15 @@ impl ShiftRepository {
         .await
     }
 
-    /// Tier 3.3 — Sweep step: flip every offered assignment whose
-    /// `expires_at` has passed to `expired`, set `responded_at`, and
-    /// return the rows so the caller can notify each hospital.
-    ///
-    /// Returns `(assignment_id, shift_id, hospital_id, role_title)` tuples.
-    pub async fn expire_due_offers(
-        &self,
-    ) -> Result<Vec<(Uuid, Uuid, Uuid, String)>, sqlx::Error> {
+    /// Sweep step: flip every offered assignment whose
+
+    pub async fn expire_due_offers(&self) -> Result<Vec<(Uuid, Uuid, Uuid, String)>, sqlx::Error> {
         sqlx::query_as::<_, (Uuid, Uuid, Uuid, String)>(
             r#"
             WITH expired AS (
                 UPDATE shift_assignments a
                    SET status       = 'expired',
-                       responded_at = NOW(),
-                       updated_at   = NOW()
+                       responded_at = NOW(),updated_at   = NOW()
                  WHERE status     = 'offered'
                    AND expires_at < NOW()
                 RETURNING id, shift_id
@@ -1136,10 +1144,8 @@ impl ShiftRepository {
         .await
     }
 
-    /// Tier 3.4 — Sweep step: auto-approve handovers whose 48h window has
-    /// passed without hospital action and no revision request. Returns
-    /// `(handover_id, shift_id, clinician_id, hospital_id, role_title)` for
-    /// each auto-approved handover so the caller can notify the parties.
+    /// Sweep step: auto-approve handovers whose 48h window has
+
     pub async fn auto_approve_due_handovers(
         &self,
     ) -> Result<Vec<(Uuid, Uuid, Uuid, Uuid, String)>, sqlx::Error> {
@@ -1147,8 +1153,7 @@ impl ShiftRepository {
             r#"
             WITH approved AS (
                 UPDATE shift_handovers h
-                   SET hospital_approved_at = NOW(),
-                       updated_at           = NOW()
+                   SET hospital_approved_at = NOW(),updated_at           = NOW()
                  WHERE h.hospital_approved_at IS NULL
                    AND h.revision_requested_at IS NULL
                    AND h.auto_approve_after < NOW()
@@ -1164,9 +1169,8 @@ impl ShiftRepository {
         .await
     }
 
-    /// Tier 3.6 — Recompute and cache `clinicians.acceptance_rate_pct` from
-    /// the current `shift_assignments` history. Called after every offer
-    /// lifecycle event (accept / decline / expiry).
+    /// Recompute and cache `clinicians.acceptance_rate_pct` from
+
     pub async fn recompute_clinician_acceptance_rate(
         &self,
         clinician_id: Uuid,
@@ -1196,10 +1200,8 @@ impl ShiftRepository {
         Ok(())
     }
 
-    /// Tier 3.6 — Recompute acceptance rates for every clinician whose
-    /// assignment lifecycle changed in the current sweep. Used by the
-    /// offer-expiry scheduler so caches stay in sync without per-row
-    /// callbacks.
+    /// Recompute acceptance rates for every clinician whose
+
     pub async fn recompute_acceptance_rates_bulk(
         &self,
         clinician_ids: &[Uuid],
@@ -1232,7 +1234,8 @@ impl ShiftRepository {
         Ok(())
     }
 
-    /// Tier 3.6 — Free-text qualifications attached to a clinician profile.
+    /// Free-text qualifications attached to a clinician profile
+
     pub async fn list_clinician_qualifications(
         &self,
         clinician_id: Uuid,
@@ -1250,8 +1253,8 @@ impl ShiftRepository {
         .await
     }
 
-    /// Tier 3.6 — Required qualifications for a shift (free-text tags from
-    /// `shift_requirements`).
+    /// Required qualifications for a shift (free-text tags from
+
     pub async fn list_shift_requirements(
         &self,
         shift_id: Uuid,
@@ -1269,9 +1272,8 @@ impl ShiftRepository {
         .await
     }
 
-    /// Tier 3.5 — Insert a clock-in approval request. Returns the record id.
-    /// Returns a unique-violation error if the worker already has a pending
-    /// or decided request for this shift (one per (shift, clinician)).
+    /// Insert a clock-in approval request. Returns the record id.
+
     pub async fn create_clockin_approval_request(
         &self,
         shift_id: Uuid,
@@ -1317,7 +1319,7 @@ impl ShiftRepository {
     }
 
     /// Whether the (shift, clinician) pair has an approved clock-in
-    /// fallback request. Used by `clock_in` to allow `Manual` method.
+
     pub async fn has_approved_clockin_request(
         &self,
         shift_id: Uuid,
@@ -1348,8 +1350,7 @@ impl ShiftRepository {
             r#"
             UPDATE clockin_approval_requests
                SET status        = CASE WHEN $2 THEN 'approved' ELSE 'denied' END::clockin_approval_status,
-                   decided_at    = NOW(),
-                   decided_by    = $3,
+                   decided_at    = NOW(),decided_by    = $3,
                    decision_notes = $4,
                    updated_at    = NOW()
              WHERE id = $1 AND status = 'pending'
@@ -1364,8 +1365,8 @@ impl ShiftRepository {
         Ok(())
     }
 
-    /// BR-F1-06: count shifts the hospital currently has in "active, unfilled" states.
-    /// Used to enforce the 10-shift cap before creating another one.
+    /// count shifts the hospital currently has in "active, unfilled" states.
+
     pub async fn count_active_unfilled_shifts(
         &self,
         hospital_id: Uuid,
@@ -1391,8 +1392,9 @@ impl ShiftRepository {
         request: CreateShiftRequest,
     ) -> Result<Shift, sqlx::Error> {
         let id = Uuid::new_v4();
-        let scheduled_end = request.scheduled_start + Duration::hours(request.duration_hours as i64);
-        
+        let scheduled_end =
+            request.scheduled_start + Duration::hours(request.duration_hours as i64);
+
         // Calculate effective rate and grand total
         let (effective_rate, grand_total) = self.calculate_compensation(&request);
 
@@ -1465,8 +1467,7 @@ impl ShiftRepository {
         sqlx::query(
             r#"
             UPDATE shifts
-            SET broadcast_at = NOW(),
-                matched_clinicians_at_publish = $2,
+            SET broadcast_at = NOW(),matched_clinicians_at_publish = $2,
                 updated_at = NOW()
             WHERE id = $1
             "#,
@@ -1485,7 +1486,7 @@ impl ShiftRepository {
             SELECT
                 s.id, s.hospital_id, h.name as hospital_name,
                 s.role_category, s.role_title, s.specialty, s.department,
-                s.shift_type, s.status, s.priority, s.urgency_bonus_pct,
+                s.shift_type, s.status(), s.priority, s.urgency_bonus_pct,
                 s.scheduled_start, s.duration_hours, s.scheduled_end,
                 s.actual_start, s.actual_end, s.assigned_clinician_id,
                 s.rate_kobo_per_hour, s.fixed_rate_kobo, s.pay_type, s.stat_bonus_kobo,
@@ -1515,7 +1516,7 @@ impl ShiftRepository {
                 SELECT
                     s.id, s.hospital_id, h.name as hospital_name,
                     s.role_category, s.role_title, s.specialty, s.department,
-                    s.shift_type, s.status, s.priority, s.urgency_bonus_pct,
+                    s.shift_type, s.status(), s.priority, s.urgency_bonus_pct,
                     s.scheduled_start, s.duration_hours, s.scheduled_end,
                     s.actual_start, s.actual_end, s.assigned_clinician_id,
                     s.rate_kobo_per_hour, s.fixed_rate_kobo, s.pay_type, s.stat_bonus_kobo,
@@ -1541,7 +1542,7 @@ impl ShiftRepository {
                 SELECT
                     s.id, s.hospital_id, h.name as hospital_name,
                     s.role_category, s.role_title, s.specialty, s.department,
-                    s.shift_type, s.status, s.priority, s.urgency_bonus_pct,
+                    s.shift_type, s.status(), s.priority, s.urgency_bonus_pct,
                     s.scheduled_start, s.duration_hours, s.scheduled_end,
                     s.actual_start, s.actual_end, s.assigned_clinician_id,
                     s.rate_kobo_per_hour, s.fixed_rate_kobo, s.pay_type, s.stat_bonus_kobo,
@@ -1680,10 +1681,7 @@ impl ShiftRepository {
         .await
     }
 
-    pub async fn count_applications_for_shift(
-        &self,
-        shift_id: Uuid,
-    ) -> Result<i64, sqlx::Error> {
+    pub async fn count_applications_for_shift(&self, shift_id: Uuid) -> Result<i64, sqlx::Error> {
         sqlx::query_scalar::<_, i64>(
             r#"
             SELECT COUNT(*)
@@ -1816,7 +1814,7 @@ impl ShiftRepository {
         Ok(result.rows_affected())
     }
 
-    /// AC-08: Find similar shift within time window
+    /// Find similar shift within time window
     pub async fn find_similar_shift(
         &self,
         hospital_id: Uuid,
@@ -1829,7 +1827,7 @@ impl ShiftRepository {
             SELECT
                 s.id, s.hospital_id, h.name as hospital_name,
                 s.role_category, s.role_title, s.specialty, s.department,
-                s.shift_type, s.status, s.priority, s.urgency_bonus_pct,
+                s.shift_type, s.status(), s.priority, s.urgency_bonus_pct,
                 s.scheduled_start, s.duration_hours, s.scheduled_end,
                 s.actual_start, s.actual_end, s.assigned_clinician_id,
                 s.rate_kobo_per_hour, s.fixed_rate_kobo, s.pay_type, s.stat_bonus_kobo,
@@ -1857,7 +1855,7 @@ impl ShiftRepository {
     }
 
     /// AC-04 / F1-F15: Store the auto-generated virtual consultation link
-    /// in the explicit `virtual_link` column on `shifts`.
+
     pub async fn update_virtual_link(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -1881,8 +1879,7 @@ impl ShiftRepository {
     }
 
     /// F1-F12 / F1-F13 / F1-F14 — atomically persist the shift's
-    /// tasks (description items, category=task), equipment (category=equipment),
-    /// and requirements (qualifications) inside the create-shift transaction.
+
     pub async fn insert_shift_description_and_requirements(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -1938,22 +1935,20 @@ impl ShiftRepository {
 
     fn calculate_compensation(&self, request: &CreateShiftRequest) -> (Option<i64>, Option<i64>) {
         let base_amount = match request.pay_type {
-            PayType::HourlyRate => {
-                request.rate_kobo_per_hour.map(|rate| (rate as f64 * request.duration_hours as f64) as i64)
-            }
+            PayType::HourlyRate => request
+                .rate_kobo_per_hour
+                .map(|rate| (rate as f64 * request.duration_hours as f64) as i64),
             PayType::FixedRate => request.fixed_rate_kobo,
         };
 
         let effective_rate = match request.pay_type {
-            PayType::HourlyRate => {
-                request.rate_kobo_per_hour.map(|rate| {
-                    if let Some(bonus_pct) = request.urgency_bonus_pct {
-                        rate + (rate * bonus_pct as i64 / 100)
-                    } else {
-                        rate
-                    }
-                })
-            }
+            PayType::HourlyRate => request.rate_kobo_per_hour.map(|rate| {
+                if let Some(bonus_pct) = request.urgency_bonus_pct {
+                    rate + (rate * bonus_pct as i64 / 100)
+                } else {
+                    rate
+                }
+            }),
             PayType::FixedRate => None,
         };
 

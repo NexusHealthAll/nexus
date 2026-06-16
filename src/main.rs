@@ -1,17 +1,17 @@
 use anyhow::Context;
 use sqlx::postgres::PgPoolOptions;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
-use nexuscare_backend::utils::AppConfig;
-use nexuscare_backend::routes;
 use nexuscare_backend::repositories::EmailOutboxRepository;
+use nexuscare_backend::routes;
 use nexuscare_backend::schedulers::{
-    BroadcastScheduler, HandoverAutoApprovalScheduler, OfferExpiryScheduler,
+    BroadcastScheduler, HandoverAutoApprovalScheduler, OfferExpiryScheduler, PayoutScheduler,
 };
 use nexuscare_backend::services::{EmailOutboxService, EmailOutboxWorker, NotificationService};
+use nexuscare_backend::utils::AppConfig;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -30,11 +30,12 @@ async fn main() -> anyhow::Result<()> {
 
     // Initialize tracing
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| "nexuscare_backend=debug,tower_http=debug".into()))
+        .with(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "nexuscare_backend=debug,tower_http=debug".into()),
+        )
         .with(tracing_subscriber::fmt::layer())
         .init();
-
 
     // Load configuration
     let cfg = AppConfig::from_env().context("Failed to load configuration")?;
@@ -65,28 +66,24 @@ async fn main() -> anyhow::Result<()> {
     tokio::spawn(worker.run());
 
     // Build the application router (also returns the AppState so we can
-    // hand its services to background schedulers).
-    let (app, state) = routes::create_router(
-        pool.clone(),
-        notification_service,
-        email_outbox_service,
-    );
+    let (app, state) =
+        routes::create_router(pool.clone(), notification_service, email_outbox_service);
 
-    // Tier 3.1 — re-broadcast cadence sweep (STAT every 15 min, Urgent every
-    // 30 min). The scheduler ticks every BROADCAST_SCHEDULER_POLL_SECS
-    // (default 60s) and lets SQL decide which shifts are due.
+    // re-broadcast cadence sweep (STAT every 15 min, Urgent every
     let broadcast_scheduler = BroadcastScheduler::new(state.shift_service.clone());
     tokio::spawn(broadcast_scheduler.run());
 
-    // Tier 3.3 — offer-expiry sweep (BR-F1-23). Marks offers past their
-    // 30-min `expires_at` as `expired` and notifies the hospital.
+    // offer-expiry sweep. Marks offers past their
     let offer_expiry_scheduler = OfferExpiryScheduler::new(state.shift_service.clone());
     tokio::spawn(offer_expiry_scheduler.run());
 
-    // Tier 3.4 — handover auto-approval sweep (BR-F1-39). Approves handovers
-    // whose 48h hospital-action window has elapsed.
+    // handover auto-approval sweep. Approves handovers
     let handover_scheduler = HandoverAutoApprovalScheduler::new(state.shift_service.clone());
     tokio::spawn(handover_scheduler.run());
+
+    // SafeHaven payout pipeline: pays out approved handovers every minute
+    let payout_scheduler = PayoutScheduler::new(state.payout_service.clone());
+    tokio::spawn(payout_scheduler.run());
 
     let addr: SocketAddr = format!("{}:{}", cfg.server.host, cfg.server.port)
         .parse()

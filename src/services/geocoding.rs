@@ -9,16 +9,16 @@ use crate::utils::validation::validate_coordinates;
 pub enum GeocodingError {
     #[error("Failed to geocode address: {0}")]
     GeocodingFailed(String),
-    
+
     #[error("Invalid address: {0}")]
     InvalidAddress(String),
-    
+
     #[error("Invalid coordinates: {0}")]
     InvalidCoordinates(String),
-    
+
     #[error("HTTP request failed: {0}")]
     RequestFailed(#[from] reqwest::Error),
-    
+
     #[error("Service unavailable, retries exhausted")]
     ServiceUnavailable,
 }
@@ -32,7 +32,6 @@ struct GeocodingResponse {
 }
 
 /// Client for geocoding addresses to coordinates (AC-02)
-/// Uses OpenStreetMap Nominatim API (can be replaced with Google Maps, etc.)
 pub struct GeocodingClient {
     client: Client,
     base_url: String,
@@ -48,15 +47,12 @@ impl GeocodingClient {
 
         Self {
             client,
-            base_url: base_url.unwrap_or_else(|| {
-                "https://nominatim.openstreetmap.org".to_string()
-            }),
+            base_url: base_url.unwrap_or_else(|| "https://nominatim.openstreetmap.org".to_string()),
             max_retries: 3,
         }
     }
 
     /// Geocode an address to coordinates with retry logic
-    /// Requirements: 2.1, 2.4, 2.5
     pub async fn geocode_address(&self, address: &Address) -> Result<Coordinates, GeocodingError> {
         // Build the full address string
         let address_string = self.format_address(address);
@@ -95,33 +91,29 @@ impl GeocodingClient {
     /// Format address for geocoding API
     fn format_address(&self, address: &Address) -> String {
         let mut parts = vec![address.line1.clone()];
-        
+
         if let Some(line2) = &address.line2 {
             if !line2.is_empty() {
                 parts.push(line2.clone());
             }
         }
-        
+
         parts.push(address.city.clone());
         parts.push(address.state.clone());
         parts.push(address.postal_code.clone());
         parts.push(address.country.clone());
-        
+
         parts.join(", ")
     }
 
     /// Call the geocoding service
     async fn geocode_with_service(&self, address: &str) -> Result<Coordinates, GeocodingError> {
         let url = format!("{}/search", self.base_url);
-        
+
         let response = self
             .client
             .get(&url)
-            .query(&[
-                ("q", address),
-                ("format", "json"),
-                ("limit", "1"),
-            ])
+            .query(&[("q", address), ("format", "json"), ("limit", "1")])
             .header("User-Agent", "NexusCare-Backend/1.0")
             .send()
             .await?;
@@ -143,12 +135,12 @@ impl GeocodingClient {
         }
 
         let result = &results[0];
-        
+
         // Parse coordinates
         let latitude = result.lat.parse::<f64>().map_err(|_| {
             GeocodingError::GeocodingFailed("Invalid latitude in response".to_string())
         })?;
-        
+
         let longitude = result.lon.parse::<f64>().map_err(|_| {
             GeocodingError::GeocodingFailed("Invalid longitude in response".to_string())
         })?;
@@ -160,7 +152,6 @@ impl GeocodingClient {
     }
 
     /// Validate coordinates are within valid geographic ranges
-    /// Requirements: 2.5
     fn validate_coordinates(&self, coords: &Coordinates) -> Result<(), GeocodingError> {
         validate_coordinates(coords.latitude, coords.longitude).map_err(|e| {
             GeocodingError::InvalidCoordinates(format!(
@@ -180,7 +171,7 @@ mod tests {
     #[test]
     fn test_format_address() {
         let client = GeocodingClient::new(None);
-        
+
         let address = Address {
             line1: "123 Main Street".to_string(),
             line2: Some("Suite 100".to_string()),
@@ -223,15 +214,13 @@ mod tests {
     }
 }
 
-
 #[cfg(test)]
 mod property_tests {
     use super::*;
     use proptest::prelude::*;
 
     // Property 5: Address geocoding returns valid coordinates
-    // Property 9: Coordinate validation
-    
+
     proptest! {
         #[test]
         fn property_9_coordinate_validation(
@@ -248,11 +237,9 @@ mod property_tests {
 
             // Property: Coordinates outside valid ranges should be rejected
             if lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0 {
-                prop_assert!(result.is_err(), 
-                    "Should reject invalid coordinates: lat={}, lon={}", lat, lon);
+                prop_assert!(result.is_err(), "Should reject invalid coordinates: lat={}, lon={}", lat, lon);
             } else {
-                prop_assert!(result.is_ok(),
-                    "Should accept valid coordinates: lat={}, lon={}", lat, lon);
+                prop_assert!(result.is_ok(), "Should accept valid coordinates: lat={}, lon={}", lat, lon);
             }
         }
     }
@@ -278,7 +265,7 @@ mod property_tests {
     #[test]
     fn test_property_8_invalid_address_handling() {
         let client = GeocodingClient::new(None);
-        
+
         // Empty address
         let empty_address = Address {
             line1: "".to_string(),

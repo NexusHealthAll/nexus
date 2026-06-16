@@ -10,16 +10,15 @@ use crate::services::geocoding::{GeocodingClient, GeocodingError};
 pub enum LocationServiceError {
     #[error("Geocoding failed: {0}")]
     GeocodingFailed(#[from] GeocodingError),
-    
+
     #[error("Location storage failed: {0}")]
     StorageFailed(#[from] LocationError),
-    
+
     #[error("Invalid service radius: {0}")]
     InvalidServiceRadius(String),
 }
 
 /// Service for geocoding addresses and storing location data (AC-02)
-/// Requirements: 2.1, 2.2, 2.3, 2.5
 pub struct LocationService {
     geocoding_client: Arc<GeocodingClient>,
     location_repo: Arc<LocationRepository>,
@@ -37,7 +36,6 @@ impl LocationService {
     }
 
     /// Geocode address and store location with 5km service radius
-    /// Requirements: 2.1, 2.2, 2.3, 2.5
     pub async fn geocode_and_store(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -45,7 +43,6 @@ impl LocationService {
         address: Address,
     ) -> Result<HospitalLocation, LocationServiceError> {
         // Step 1: Geocode the address to coordinates
-        // In development, if geocoding fails, use default coordinates for Nigeria
         let coordinates = match self.geocoding_client.geocode_address(&address).await {
             Ok(coords) => coords,
             Err(e) => {
@@ -55,9 +52,8 @@ impl LocationService {
                     format!("{}, {}, {}", address.line1, address.city, address.country),
                     e
                 );
-                
+
                 // Use default coordinates (Lagos, Nigeria) for development
-                // In production, you would want to fail here
                 Coordinates {
                     latitude: 6.5244,
                     longitude: 3.3792,
@@ -92,16 +88,16 @@ impl LocationService {
     }
 
     /// Calculate service area based on coordinates and radius
-    /// Requirements: 2.3
     pub fn calculate_service_radius(
         &self,
         coordinates: Coordinates,
         radius_km: f64,
     ) -> Result<ServiceArea, LocationServiceError> {
         if radius_km <= 0.0 || radius_km > 100.0 {
-            return Err(LocationServiceError::InvalidServiceRadius(
-                format!("Radius must be between 0 and 100km, got {}", radius_km),
-            ));
+            return Err(LocationServiceError::InvalidServiceRadius(format!(
+                "Radius must be between 0 and 100km, got {}",
+                radius_km
+            )));
         }
 
         Ok(ServiceArea {
@@ -198,7 +194,9 @@ mod tests {
         assert_eq!(result.unwrap().radius_km, 5.0);
 
         // Invalid radius (too small)
-        assert!(service.calculate_service_radius(coords.clone(), 0.0).is_err());
+        assert!(service
+            .calculate_service_radius(coords.clone(), 0.0)
+            .is_err());
 
         // Invalid radius (too large)
         assert!(service.calculate_service_radius(coords, 101.0).is_err());

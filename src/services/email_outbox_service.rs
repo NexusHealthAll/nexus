@@ -3,8 +3,8 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::repositories::email_outbox::EmailOutboxRepository;
-use crate::services::notification_service::{NotificationError, NotificationService};
 use crate::services::email_templates::EmailContent;
+use crate::services::notification_service::{NotificationError, NotificationService};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EmailOutboxError {
@@ -20,10 +20,7 @@ pub struct EmailOutboxService {
 }
 
 impl EmailOutboxService {
-    pub fn new(
-        repo: Arc<EmailOutboxRepository>,
-        notification: Arc<NotificationService>,
-    ) -> Self {
+    pub fn new(repo: Arc<EmailOutboxRepository>, notification: Arc<NotificationService>) -> Self {
         Self { repo, notification }
     }
 
@@ -54,12 +51,15 @@ impl EmailOutboxService {
 
         for item in pending {
             let attempts = self.repo.mark_processing(item.id).await?;
-            let send_result = self.notification.send_email_message(
-                &item.to_email,
-                &item.subject,
-                &item.text_body,
-                item.html_body.as_deref(),
-            ).await;
+            let send_result = self
+                .notification
+                .send_email_message(
+                    &item.to_email,
+                    &item.subject,
+                    &item.text_body,
+                    item.html_body.as_deref(),
+                )
+                .await;
 
             match send_result {
                 Ok(()) => {
@@ -72,7 +72,9 @@ impl EmailOutboxService {
                     } else {
                         let delay_minutes = retry_base_minutes * attempts as i64;
                         let retry_at = Utc::now() + Duration::minutes(delay_minutes);
-                        self.repo.reschedule(item.id, &err.to_string(), retry_at).await?;
+                        self.repo
+                            .reschedule(item.id, &err.to_string(), retry_at)
+                            .await?;
                     }
                 }
             }

@@ -1,9 +1,11 @@
-use axum::{extract::Query, http::StatusCode, Json};
 use axum::extract::State;
+use axum::{extract::Query, http::StatusCode, Json};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::handlers::registration::{ErrorResponse as RegistrationErrorResponse, ListHospitalsQuery};
+use crate::handlers::registration::{
+    ErrorResponse as RegistrationErrorResponse, ListHospitalsQuery,
+};
 use crate::models::clinician::ClinicianAdminSummary;
 use crate::models::registration::RegistrationStatus;
 use crate::routes::AppState;

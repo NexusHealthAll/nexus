@@ -8,16 +8,15 @@ use crate::models::location::HospitalLocation;
 pub enum LocationError {
     #[error("Database error: {0}")]
     DatabaseError(#[from] sqlx::Error),
-    
+
     #[error("Location not found for hospital: {0}")]
     NotFound(Uuid),
-    
+
     #[error("Invalid coordinates: latitude={0}, longitude={1}")]
     InvalidCoordinates(f64, f64),
 }
 
 /// Repository for hospital location data persistence
-/// Stores geocoded coordinates and service radius (AC-02)
 pub struct LocationRepository {
     pool: PgPool,
 }
@@ -28,7 +27,6 @@ impl LocationRepository {
     }
 
     /// Create a new location record within a transaction
-    /// Requirements: 2.2, 2.3
     pub async fn create(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -82,7 +80,6 @@ impl LocationRepository {
     }
 
     /// Find location by hospital ID
-    /// Requirements: 2.2
     pub async fn find_by_hospital_id(
         &self,
         hospital_id: Uuid,
@@ -107,7 +104,6 @@ impl LocationRepository {
     }
 
     /// Update location coordinates
-    /// Requirements: 2.2
     pub async fn update_coordinates(
         &self,
         location_id: Uuid,
@@ -156,9 +152,7 @@ mod tests {
     use super::*;
 
     // Unit tests will be added here
-    // Property tests will be in Task 2.5
 }
-
 
 #[cfg(test)]
 mod property_tests {
@@ -166,8 +160,7 @@ mod property_tests {
     use proptest::prelude::*;
 
     // Property 6: Location data persistence round-trip
-    // Property 9: Coordinate validation
-    
+
     proptest! {
         #[test]
         fn property_9_coordinate_validation_rejects_invalid_coords(
@@ -181,14 +174,8 @@ mod property_tests {
 
             // Create a dummy location to test validation
             let location = NewLocation {
-                hospital_id: Uuid::new_v4(),
-                address_line1: "Test".to_string(),
-                address_line2: None,
-                city: "Test".to_string(),
-                state: "Test".to_string(),
-                postal_code: "12345".to_string(),
-                country: "Test".to_string(),
-                latitude: lat,
+                hospital_id: Uuid::new_v4(), address_line1: "Test".to_string(), address_line2: None,
+                city: "Test".to_string(), state: "Test".to_string(), postal_code: "12345".to_string(), country: "Test".to_string(), latitude: lat,
                 longitude: lon,
                 service_radius_km: 5.0,
             };
@@ -196,7 +183,6 @@ mod property_tests {
             // Property: Invalid coordinates should be rejected
             if lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0 {
                 // Validation happens in the create method
-                // This will be fully tested in integration tests
                 prop_assert!(lat < -90.0 || lat > 90.0 || lon < -180.0 || lon > 180.0);
             }
         }

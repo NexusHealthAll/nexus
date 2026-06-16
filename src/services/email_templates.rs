@@ -7,7 +7,7 @@ pub struct EmailContent {
 }
 
 fn wrap_html(title: &str, body: &str) -> String {
-        format!(
+    format!(
         r#"<!doctype html>
 <html>
   <head>
@@ -51,7 +51,7 @@ fn wrap_html(title: &str, body: &str) -> String {
         </table>
   </body>
 </html>"#,
-                title, title, title, body
+        title, title, title, body
     )
 }
 
@@ -75,10 +75,17 @@ pub fn hospital_registration_submitted(hospital_name: &str) -> EmailContent {
         ),
     );
 
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
-pub fn hospital_registration_approved(hospital_name: &str, approved_at: DateTime<Utc>) -> EmailContent {
+pub fn hospital_registration_approved(
+    hospital_name: &str,
+    approved_at: DateTime<Utc>,
+) -> EmailContent {
     let subject = "Hospital Registration Approved - NexusCare".to_string();
     let text_body = format!(
         "Congratulations! Your hospital '{}' has been approved.\n\nApproval Date: {}\n\nYou can now access the platform and start creating shifts.\n\nNexusCare",
@@ -97,13 +104,14 @@ pub fn hospital_registration_approved(hospital_name: &str, approved_at: DateTime
         ),
     );
 
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
-pub fn hospital_registration_rejected(
-    hospital_name: &str,
-    reason: &str,
-) -> EmailContent {
+pub fn hospital_registration_rejected(hospital_name: &str, reason: &str) -> EmailContent {
     let subject = "Hospital Registration Update - NexusCare".to_string();
     let text_body = format!(
         "Your hospital '{}' could not be approved at this time.\n\nReason: {}\n\nIf you have questions, contact support.\n\nNexusCare",
@@ -122,7 +130,11 @@ pub fn hospital_registration_rejected(
         ),
     );
 
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
 pub fn clinician_welcome(first_name: Option<&str>) -> EmailContent {
@@ -142,7 +154,11 @@ pub fn clinician_welcome(first_name: Option<&str>) -> EmailContent {
         ),
     );
 
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
 pub fn shift_created(
@@ -170,7 +186,11 @@ pub fn shift_created(
         ),
     );
 
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
 pub fn shift_assigned_clinician(
@@ -201,11 +221,15 @@ pub fn shift_assigned_clinician(
         ),
     );
 
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
-/// Tier 3.2 / Tier 3.1 — Sent to each eligible clinician when a shift is
-/// broadcast (or re-broadcast). Per FRS §3.2.5 the body differs by urgency.
+/// Sent to each eligible clinician when a shift is broadcast or re-broadcast
+
 pub fn shift_broadcast(
     clinician_first_name: &str,
     hospital_name: &str,
@@ -257,15 +281,16 @@ pub fn shift_broadcast(
         ),
     );
 
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
-/// Tier 3.5 — Sent to the hospital when a worker requests a GPS-fallback
-/// clock-in approval (photo of the entrance).
-pub fn clockin_approval_requested(
-    clinician_name: &str,
-    role_title: &str,
-) -> EmailContent {
+/// Sent to the hospital when a worker requests a GPS-fallback
+
+pub fn clockin_approval_requested(clinician_name: &str, role_title: &str) -> EmailContent {
     let subject = "Manual Clock-In Requested - NexusCare".to_string();
     let text_body = format!(
         "{} has requested a manual clock-in for the {} shift because their GPS fix is inaccurate.\n\nReview the photo in the NexusCare app and approve or deny.\n\nNexusCare",
@@ -280,14 +305,16 @@ pub fn clockin_approval_requested(
             clinician_name, role_title
         ),
     );
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
-/// Tier 3.5 — Sent to the worker when their GPS-fallback request is approved.
-pub fn clockin_approval_approved(
-    clinician_first_name: &str,
-    role_title: &str,
-) -> EmailContent {
+/// Sent to the worker when their GPS-fallback request is approved
+
+pub fn clockin_approval_approved(clinician_first_name: &str, role_title: &str) -> EmailContent {
     let subject = "Manual Clock-In Approved - NexusCare".to_string();
     let text_body = format!(
         "Hello {},\n\nYour manual clock-in request for the {} shift was approved.\nYou can now clock in via the NexusCare app.\n\nNexusCare",
@@ -303,10 +330,15 @@ pub fn clockin_approval_approved(
             clinician_first_name, role_title
         ),
     );
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
-/// Tier 3.5 — Sent to the worker when their GPS-fallback request is denied.
+/// Sent to the worker when their GPS-fallback request is denied
+
 pub fn clockin_approval_denied(
     clinician_first_name: &str,
     role_title: &str,
@@ -329,20 +361,21 @@ pub fn clockin_approval_denied(
              <p style=\"margin:0 0 12px 0;\">Contact the hospital admin if you believe this is in error.</p>
              <p style=\"margin:0;\">NexusCare</p>",
             clinician_first_name, role_title,
-            notes.filter(|s| !s.trim().is_empty())
+            notes.filter(|s| !s.trim(). is_empty())
                 .map(|n| format!("<br/><strong>Notes:</strong> {n}"))
                 .unwrap_or_default()
         ),
     );
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
-/// Tier 3.4 — Sent to the worker when their handover is auto-approved after
-/// the 48h hospital-action window lapses (BR-F1-39).
-pub fn handover_auto_approved(
-    clinician_first_name: &str,
-    role_title: &str,
-) -> EmailContent {
+/// Sent to the worker when their handover is auto-approved after
+
+pub fn handover_auto_approved(clinician_first_name: &str, role_title: &str) -> EmailContent {
     let subject = "Handover Auto-Approved - NexusCare".to_string();
     let text_body = format!(
         "Hello {},\n\nYour handover for the {} shift was auto-approved after 48 hours without hospital action.\nPayment processing can proceed.\n\nNexusCare",
@@ -359,11 +392,15 @@ pub fn handover_auto_approved(
         ),
     );
 
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
-/// Tier 3.3 — Sent to the hospital when a shift offer to a clinician expires
-/// (the worker did not respond within the 30-minute window).
+/// Sent to the hospital when a shift offer to a clinician expires
+
 pub fn shift_offer_expired(role_title: &str) -> EmailContent {
     let subject = "Shift Offer Expired - NexusCare".to_string();
     let text_body = format!(
@@ -380,10 +417,15 @@ pub fn shift_offer_expired(role_title: &str) -> EmailContent {
         ),
     );
 
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
-/// Tier 2.4 — Sent to the hospital when a worker declines a shift offer.
+/// Sent to the hospital when a worker declines a shift offer
+
 pub fn shift_offer_declined(
     role_title: &str,
     scheduled_start: DateTime<Utc>,
@@ -410,17 +452,22 @@ pub fn shift_offer_declined(
              <p style=\"margin:0;\">NexusCare</p>",
             role_title,
             format_timestamp(scheduled_start),
-            reason.filter(|s| !s.trim().is_empty())
+            reason
+                .filter(|s| !s.trim().is_empty())
                 .map(|r| format!("<br/><strong>Reason:</strong> {r}"))
                 .unwrap_or_default()
         ),
     );
 
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
-/// Tier 2.3 — Sent to a clinician when a hospital sends them a shift offer
-/// (§3.4.5). Offer expires in 30 minutes (BR-F1-21).
+/// Sent to a clinician when a hospital sends them a shift offer
+
 pub fn shift_offered(
     clinician_first_name: &str,
     role_title: &str,
@@ -452,7 +499,11 @@ pub fn shift_offered(
         ),
     );
 
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
 pub fn shift_assigned_hospital(
@@ -483,7 +534,11 @@ pub fn shift_assigned_hospital(
         ),
     );
 
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
 pub fn shift_cancelled(
@@ -514,7 +569,11 @@ pub fn shift_cancelled(
         ),
     );
 
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
 pub fn shift_rescheduled(
@@ -542,15 +601,18 @@ pub fn shift_rescheduled(
         ),
     );
 
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
 pub fn email_otp(code: &str, expires_in_minutes: i64) -> EmailContent {
     let subject = "Your NexusCare verification code".to_string();
     let text_body = format!(
         "Your verification code is {}. It expires in {} minutes.",
-        code,
-        expires_in_minutes
+        code, expires_in_minutes
     );
     let html_body = wrap_html(
         "Verification Code",
@@ -563,7 +625,11 @@ pub fn email_otp(code: &str, expires_in_minutes: i64) -> EmailContent {
         ),
     );
 
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }
 
 pub fn password_reset(reset_link: &str) -> EmailContent {
@@ -585,5 +651,9 @@ pub fn password_reset(reset_link: &str) -> EmailContent {
         ),
     );
 
-    EmailContent { subject, text_body, html_body }
+    EmailContent {
+        subject,
+        text_body,
+        html_body,
+    }
 }

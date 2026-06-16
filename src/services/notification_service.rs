@@ -36,11 +36,9 @@ impl NotificationService {
             .unwrap_or(587);
         let from_email = std::env::var("SMTP_FROM_EMAIL")
             .unwrap_or_else(|_| "noreply@nexuscare.com".to_string());
-        let from_name = std::env::var("SMTP_FROM_NAME")
-            .unwrap_or_else(|_| "NexusCare".to_string());
+        let from_name = std::env::var("SMTP_FROM_NAME").unwrap_or_else(|_| "NexusCare".to_string());
 
         let mock = smtp_host.is_empty() || smtp_user.is_empty() || smtp_pass.is_empty();
-
         let smtp = if !mock {
             let creds = Credentials::new(smtp_user, smtp_pass);
             AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&smtp_host)
@@ -51,10 +49,16 @@ impl NotificationService {
             None
         };
 
-        Self { smtp, from_email, from_name, mock }
+        Self {
+            smtp,
+            from_email,
+            from_name,
+            mock,
+        }
     }
 
-    /// Send an email with optional HTML. In mock mode, logs instead of sending.
+    /// Send an email with optional HTML. In mock mode, logs instead of sending
+
     pub async fn send_email_message(
         &self,
         to: &str,
@@ -74,20 +78,29 @@ impl NotificationService {
 
         let from = format!("{} <{}>", self.from_name, self.from_email);
         let builder = Message::builder()
-            .from(from.parse().map_err(|e| NotificationError::EmailFailed(format!("{}", e)))?)
-            .to(to.parse().map_err(|e| NotificationError::EmailFailed(format!("{}", e)))?)
+            .from(
+                from.parse()
+                    .map_err(|e| NotificationError::EmailFailed(format!("{}", e)))?,
+            )
+            .to(to
+                .parse()
+                .map_err(|e| NotificationError::EmailFailed(format!("{}", e)))?)
             .subject(subject);
 
         let email = match html_body {
             Some(html) => builder
                 .multipart(
                     MultiPart::alternative()
-                        .singlepart(SinglePart::builder()
-                            .header(ContentType::TEXT_PLAIN)
-                            .body(text_body.to_string()))
-                        .singlepart(SinglePart::builder()
-                            .header(ContentType::TEXT_HTML)
-                            .body(html.to_string())),
+                        .singlepart(
+                            SinglePart::builder()
+                                .header(ContentType::TEXT_PLAIN)
+                                .body(text_body.to_string()),
+                        )
+                        .singlepart(
+                            SinglePart::builder()
+                                .header(ContentType::TEXT_HTML)
+                                .body(html.to_string()),
+                        ),
                 )
                 .map_err(|e| NotificationError::EmailFailed(e.to_string()))?,
             None => builder
@@ -106,7 +119,8 @@ impl NotificationService {
         Ok(())
     }
 
-    /// Send a plain-text email. In mock mode, logs instead of sending.
+    /// Send a plain-text email. In mock mode, logs instead of sending
+
     pub async fn send_email(
         &self,
         to: &str,
@@ -115,7 +129,6 @@ impl NotificationService {
     ) -> Result<(), NotificationError> {
         self.send_email_message(to, subject, body, None).await
     }
-
 
     /// Send push notification (stub — wire FCM when ready)
     #[allow(dead_code)]
@@ -127,12 +140,14 @@ impl NotificationService {
     ) -> Result<(), NotificationError> {
         tracing::info!(
             "[PUSH] hospital={} title={} message={}",
-            hospital_id, title, message
+            hospital_id,
+            title,
+            message
         );
         Ok(())
     }
 
-    /// AC-07: Send shift broadcast notification to eligible workers
+    /// Send shift broadcast notification to eligible workers
     pub async fn send_shift_broadcast_notification(
         &self,
         shift_id: Uuid,
@@ -141,23 +156,22 @@ impl NotificationService {
     ) -> Result<(), NotificationError> {
         tracing::info!(
             "[SHIFT BROADCAST] shift_id={} hospital_id={} matched_clinicians={}",
-            shift_id, hospital_id, matched_count
+            shift_id,
+            hospital_id,
+            matched_count
         );
 
         // In production, this would:
-        // 1. Query all eligible clinicians based on shift criteria
-        // 2. Send push notifications to each clinician's device
-        // 3. Log notification delivery for audit trail
-        
+
         // Mock implementation
         tracing::info!(
             "Push notifications sent to {} eligible workers for shift {}",
-            matched_count, shift_id
+            matched_count,
+            shift_id
         );
 
         Ok(())
     }
-
 }
 
 impl Default for NotificationService {
@@ -173,7 +187,6 @@ mod tests {
     #[tokio::test]
     async fn test_send_email_plain() {
         let service = NotificationService::new();
-
         let result = service
             .send_email("admin@test.com", "Subject", "Body")
             .await;
@@ -184,7 +197,6 @@ mod tests {
     #[tokio::test]
     async fn test_send_email_html() {
         let service = NotificationService::new();
-
         let result = service
             .send_email_message("admin@test.com", "Subject", "Body", Some("<p>Body</p>"))
             .await;

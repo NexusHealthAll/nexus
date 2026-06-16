@@ -1,41 +1,39 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use utoipa::ToSchema;
 use uuid::Uuid;
 use validator::Validate;
-use utoipa::ToSchema;
 
 use super::registration::{ActorType, AuditEventType, RegistrationStatus};
 use crate::utils::validation::{validate_email_rfc5322, validate_phone_e164};
 
-// ---------------------------------------------------------------------------
 // Core Domain Models for Hospital Admin Registration (AC-01 to AC-05)
-// ---------------------------------------------------------------------------
 
 /// Address structure for hospital registration
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct Address {
     #[validate(length(min = 5, max = 255))]
     pub line1: String,
-    
+
     #[validate(length(max = 255))]
     pub line2: Option<String>,
-    
+
     #[validate(length(min = 2, max = 100))]
     pub city: String,
-    
+
     #[validate(length(min = 2, max = 100))]
     pub state: String,
-    
+
     #[validate(length(min = 3, max = 20))]
     pub postal_code: String,
-    
+
     #[validate(length(min = 2, max = 100))]
     pub country: String,
 }
 
 /// Geographic coordinates
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Coordinates {
     pub latitude: f64,
     pub longitude: f64,
@@ -54,52 +52,56 @@ pub enum PaymentMethodType {
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct PaymentDetails {
     pub method_type: PaymentMethodType,
-    
+
     // For card payments
     #[validate(length(min = 13, max = 19))]
     pub card_number: Option<String>,
-    
+
     #[validate(range(min = 1, max = 12))]
     pub expiry_month: Option<u8>,
-    
+
     #[validate(range(min = 2024, max = 2100))]
     pub expiry_year: Option<u16>,
-    
+
     #[validate(length(min = 3, max = 4))]
     pub cvv: Option<String>,
-    
+
     // For bank account payments
     #[validate(length(min = 10, max = 10))]
     pub account_number: Option<String>,
-    
+
     #[validate(length(min = 3, max = 10))]
     pub bank_code: Option<String>,
 }
 
-// ---------------------------------------------------------------------------
 // Request Models
-// ---------------------------------------------------------------------------
 
 /// Hospital registration request (AC-01)
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct HospitalRegistrationRequest {
     #[validate(length(min = 2, max = 200))]
     pub hospital_name: String,
-    
+
+    /// First name of the hospital admin (the human contact) — used to
+    #[validate(length(min = 1, max = 100))]
+    pub admin_first_name: String,
+
+    /// Last name of the hospital admin.
+    #[validate(length(min = 1, max = 100))]
+    pub admin_last_name: String,
+
+    /// Hospital + admin contact email. Login OTPs go here after approval.
     #[validate(custom(function = "validate_email_rfc5322"))]
     pub email: String,
-    
+
     #[validate(custom(function = "validate_phone_e164"))]
     pub phone: String,
-    
+
     #[validate(length(min = 5, max = 50))]
     pub registration_number: String,
-    
+
     #[validate(nested)]
     pub address: Address,
-    
-    #[validate(nested)]
-    pub payment_details: PaymentDetails,
 }
 
 /// Admin approval request (AC-05)
@@ -115,9 +117,7 @@ pub struct RejectionRequest {
     pub reason: String,
 }
 
-// ---------------------------------------------------------------------------
 // Response Models
-// ---------------------------------------------------------------------------
 
 /// Hospital registration response
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -155,9 +155,7 @@ pub struct RejectionResponse {
     pub message: String,
 }
 
-// ---------------------------------------------------------------------------
 // Database Models
-// ---------------------------------------------------------------------------
 
 /// New hospital record for creation
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,16 +180,6 @@ pub struct NewLocation {
     pub latitude: f64,
     pub longitude: f64,
     pub service_radius_km: f64,
-}
-
-/// New billing info record for creation (AC-03)
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct NewBillingInfo {
-    pub hospital_id: Uuid,
-    pub payment_provider: String,
-    pub encrypted_token: String,
-    pub payment_method_type: PaymentMethodType,
-    pub last_four: Option<String>,
 }
 
 /// Audit entry for registration events
@@ -243,29 +231,13 @@ mod tests {
         ) {
             let request = HospitalRegistrationRequest {
                 hospital_name,
-                email: "admin@hospital.com".to_string(),
-                phone: "+2348012345678".to_string(),
-                registration_number,
+                admin_first_name: "Admin".to_string(), admin_last_name: "User".to_string(), email: "admin@hospital.com".to_string(), phone: "+2348012345678".to_string(), registration_number,
                 address: Address {
-                    line1: "123 Test Street".to_string(),
-                    line2: None,
-                    city: "Lagos".to_string(),
-                    state: "Lagos".to_string(),
-                    postal_code: "100001".to_string(),
-                    country: "Nigeria".to_string(),
-                },
-                payment_details: PaymentDetails {
-                    method_type: PaymentMethodType::Card,
-                    card_number: Some("4111111111111111".to_string()),
-                    expiry_month: Some(12),
-                    expiry_year: Some(2025),
-                    cvv: Some("123".to_string()),
-                    account_number: None,
-                    bank_code: None,
-                },
+                    line1: "123 Test Street".to_string(), line2: None,
+                    city: "Lagos".to_string(), state: "Lagos".to_string(), postal_code: "100001".to_string(), country: "Nigeria".to_string(), },
             };
 
-            prop_assert!(request.validate().is_ok());
+            prop_assert!(request.validate(). is_ok());
         }
     }
 

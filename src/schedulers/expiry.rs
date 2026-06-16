@@ -1,9 +1,4 @@
-//! Offer-expiry sweep (FRS BR-F1-23).
-//!
-//! Every `poll_secs` (default 60), this task flips every `shift_assignments`
-//! row whose `status = 'offered'` and `expires_at < now()` to `expired` and
-//! notifies the hospital so it can offer the shift to the next ranked
-//! candidate.
+// ! Offer-expiry sweep (FRS ).
 
 use std::sync::Arc;
 use std::time::Duration;

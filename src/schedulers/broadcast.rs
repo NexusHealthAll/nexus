@@ -1,15 +1,4 @@
-//! Re-broadcast cadence scheduler (FRS BR-F1-11..14).
-//!
-//! Every `poll_secs` (default 60), this task wakes up and asks the shift
-//! service to re-broadcast any open STAT/Urgent shifts whose per-priority
-//! cadence has lapsed:
-//!
-//!   * STAT  — every 15 minutes
-//!   * Urgent — every 30 minutes
-//!   * Normal / Scheduled — broadcast once at creation, never re-broadcast
-//!
-//! Each re-broadcast inserts a row into `shift_broadcast_records` and fires
-//! per-recipient emails via the outbox.
+// ! Re-broadcast cadence scheduler (FRS ..14).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -33,7 +22,6 @@ impl BroadcastScheduler {
     pub async fn run(self) {
         let mut interval = tokio::time::interval(Duration::from_secs(self.poll_secs));
         // Skip the initial tick that fires immediately so we don't double up
-        // with the first broadcast performed during shift creation.
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         interval.tick().await;
 

@@ -16,7 +16,6 @@ pub enum VerificationStatus {
 }
 
 /// Registration step in the 4-step onboarding flow matching the UI labels:
-/// Step 1: Profile Setup  → Step 2: Credentials  → Step 3: Verification  → Step 4: Access Granted
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type)]
 #[sqlx(type_name = "registration_step", rename_all = "snake_case")]
 #[serde(rename_all = "snake_case")]
@@ -54,10 +53,8 @@ pub struct Hospital {
     /// User ID of the hospital admin who initiated registration
     pub admin_user_id: Option<Uuid>,
     /// Timestamp when documents were submitted for compliance review (Step 3).
-    /// Used to track the 24-48 business hour verification window.
     pub legal_submitted_at: Option<DateTime<Utc>>,
     /// Overall setup progress percentage (0–100) shown in the progress bar.
-    /// Incremented as the hospital completes each setup section.
     pub setup_progress_percent: i16,
     /// Optional logo/profile image URL
     pub logo_url: Option<String>,
@@ -68,19 +65,35 @@ pub struct Hospital {
 /// Payload for Step 1 (Setup) of hospital registration.
 #[derive(Debug, Clone, Serialize, Deserialize, Validate)]
 pub struct CreateHospitalRequest {
-    #[validate(length(min = 2, max = 255, message = "Hospital name must be between 2 and 255 characters"))]
+    #[validate(length(
+        min = 2,
+        max = 255,
+        message = "Hospital name must be between 2 and 255 characters"
+    ))]
     pub name: String,
 
-    #[validate(length(min = 3, max = 50, message = "Registration number must be between 3 and 50 characters"))]
+    #[validate(length(
+        min = 3,
+        max = 50,
+        message = "Registration number must be between 3 and 50 characters"
+    ))]
     pub registration_number: String,
 
     #[validate(email(message = "A valid email address is required"))]
     pub email: String,
 
-    #[validate(length(min = 5, max = 500, message = "Address must be between 5 and 500 characters"))]
+    #[validate(length(
+        min = 5,
+        max = 500,
+        message = "Address must be between 5 and 500 characters"
+    ))]
     pub address: String,
 
-    #[validate(length(min = 7, max = 20, message = "Phone number must be between 7 and 20 characters"))]
+    #[validate(length(
+        min = 7,
+        max = 20,
+        message = "Phone number must be between 7 and 20 characters"
+    ))]
     pub phone_number: String,
 }
 
