@@ -37,12 +37,9 @@ pub struct WalletService {
 }
 
 impl WalletService {
-    pub fn new(
-        repo: Arc<WalletRepository>,
-        safehaven: Arc<SafeHavenClient>,
-        pool: PgPool,
-    ) -> Self {
-        let callback_url = std::env::var("SAFEHAVEN_CALLBACK_URL").unwrap_or_default(); Self {
+    pub fn new(repo: Arc<WalletRepository>, safehaven: Arc<SafeHavenClient>, pool: PgPool) -> Self {
+        let callback_url = std::env::var("SAFEHAVEN_CALLBACK_URL").unwrap_or_default();
+        Self {
             repo,
             safehaven,
             pool,
@@ -52,7 +49,6 @@ impl WalletService {
     }
 
     /// Idempotently provision a SafeHaven sub-account for the hospital
-
 
     pub async fn ensure_sub_account(
         &self,
@@ -70,14 +66,15 @@ impl WalletService {
             }
         }
 
-        let callback = (!self.callback_url.trim(). is_empty()).then_some(self.callback_url.as_str());
+        let callback = (!self.callback_url.trim().is_empty()).then_some(self.callback_url.as_str());
 
         let sub = self
             .safehaven
             .create_sub_account(
                 phone_number,
                 email,
-                &hospital_id.to_string(), identity_type,
+                &hospital_id.to_string(),
+                identity_type,
                 identity_number,
                 callback,
             )
@@ -88,7 +85,9 @@ impl WalletService {
                 hospital_id,
                 &sub.id,
                 &sub.account_number,
-                sub.bank_code.as_deref(), sub.account_name.as_deref(), )
+                sub.bank_code.as_deref(),
+                sub.account_name.as_deref(),
+            )
             .await?;
 
         tracing::info!(
@@ -127,7 +126,6 @@ impl WalletService {
 
     /// Mint a one-shot virtual account at SafeHaven and record a pending deposit
 
-
     pub async fn request_deposit(
         &self,
         hospital_id: Uuid,
@@ -135,7 +133,8 @@ impl WalletService {
     ) -> Result<WalletDepositRequest, WalletServiceError> {
         if amount_kobo < 100_000 {
             return Err(WalletServiceError::Validation(
-                "Minimum deposit is ₦1,000".to_string(), ));
+                "Minimum deposit is ₦1,000".to_string(),
+            ));
         }
 
         self.repo.ensure_wallet_row(hospital_id).await?;
@@ -146,20 +145,23 @@ impl WalletService {
         let wallet = self.repo.find_wallet(hospital_id).await?;
         let (settlement_bank, settlement_acct) = wallet
             .as_ref()
-            .and_then(|w| match (&w.safehaven_bank_code, &w.safehaven_account_number) {
-                (Some(b), Some(a)) => Some((b.clone(), a.clone())),
-                _ => None,
-            })
+            .and_then(
+                |w| match (&w.safehaven_bank_code, &w.safehaven_account_number) {
+                    (Some(b), Some(a)) => Some((b.clone(), a.clone())),
+                    _ => None,
+                },
+            )
             .map(|(b, a)| (Some(b), Some(a)))
             .unwrap_or((None, None));
 
-        let callback = if self.callback_url.trim(). is_empty() {
+        let callback = if self.callback_url.trim().is_empty() {
             // Mock mode tolerates a placeholder URL; real SafeHaven rejects it.
             if self.safehaven.is_mock() {
                 "https://mock.invalid/webhook".to_string()
             } else {
                 return Err(WalletServiceError::Validation(
-                    "SAFEHAVEN_CALLBACK_URL is not configured".to_string(), ));
+                    "SAFEHAVEN_CALLBACK_URL is not configured".to_string(),
+                ));
             }
         } else {
             self.callback_url.clone()
@@ -169,8 +171,11 @@ impl WalletService {
             .safehaven
             .create_virtual_account(
                 amount_naira,
-                self.deposit_validity.num_seconds(), &callback,
-                settlement_bank.as_deref(), settlement_acct.as_deref(), &external_reference,
+                self.deposit_validity.num_seconds(),
+                &callback,
+                settlement_bank.as_deref(),
+                settlement_acct.as_deref(),
+                &external_reference,
             )
             .await?;
 
@@ -181,7 +186,9 @@ impl WalletService {
                 hospital_id,
                 amount_kobo,
                 &va.account_number,
-                va.bank_code.as_deref(), va.account_name.as_deref(), valid_until,
+                va.bank_code.as_deref(),
+                va.account_name.as_deref(),
+                valid_until,
                 &external_reference,
             )
             .await?;
@@ -216,7 +223,6 @@ impl WalletService {
     }
 
     /// Process a SafeHaven webhook. Idempotent via `webhook_events.provider_event_id`
-
 
     pub async fn process_webhook(
         &self,
@@ -258,7 +264,9 @@ impl WalletService {
 
         match &result {
             Ok(_) => {
-                self.repo.mark_webhook_processed(webhook_event_id, None).await?;
+                self.repo
+                    .mark_webhook_processed(webhook_event_id, None)
+                    .await?;
             }
             Err(e) => {
                 let _ = self
@@ -274,9 +282,15 @@ impl WalletService {
         &self,
         payload: &serde_json::Value,
     ) -> Result<WebhookOutcome, WalletServiceError> {
-        let data = payload.get("data").cloned(). unwrap_or(serde_json::Value::Null);
+        let data = payload
+            .get("data")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         let status = data.get("status").and_then(|v| v.as_str()).unwrap_or("");
-        let success = matches!(status.to_ascii_lowercase().as_str(), "completed" | "success");
+        let success = matches!(
+            status.to_ascii_lowercase().as_str(),
+            "completed" | "success"
+        );
         if !success {
             return Ok(WebhookOutcome::Ignored);
         }
@@ -298,7 +312,11 @@ impl WalletService {
         let deposit = match deposit {
             Some(d) => Some(d),
             None => match &credit_account_number {
-                Some(acct) => self.repo.find_pending_deposit_by_account_number(acct).await?,
+                Some(acct) => {
+                    self.repo
+                        .find_pending_deposit_by_account_number(acct)
+                        .await?
+                }
                 None => None,
             },
         };
@@ -319,7 +337,7 @@ impl WalletService {
             .or_else(|| data.get("reference"))
             .and_then(|v| v.as_str());
 
-        let mut tx = self.pool.begin(). await?;
+        let mut tx = self.pool.begin().await?;
         let (hospital_id, _ledger_id) = self
             .repo
             .complete_deposit_in_tx(
@@ -330,7 +348,7 @@ impl WalletService {
                 payload,
             )
             .await?;
-        tx.commit(). await?;
+        tx.commit().await?;
 
         tracing::info!(
             "Wallet credited: hospital {} <- ₦{} (deposit {})",
@@ -347,12 +365,14 @@ impl WalletService {
 
     /// Hospital wired straight to its sub-account, bypassing the virtual-account flow
 
-
     async fn handle_subaccount_inflow(
         &self,
         payload: &serde_json::Value,
     ) -> Result<WebhookOutcome, WalletServiceError> {
-        let data = payload.get("data").cloned(). unwrap_or(serde_json::Value::Null);
+        let data = payload
+            .get("data")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
         let dest_account = data
             .get("creditAccountNumber")
             .or_else(|| data.get("destinationAccountNumber"))
@@ -362,7 +382,8 @@ impl WalletService {
         if amount_naira <= 0 || dest_account.is_none() {
             return Ok(WebhookOutcome::Ignored);
         }
-        let dest_account = dest_account.unwrap(); let hospital_id: Option<Uuid> = sqlx::query_scalar(
+        let dest_account = dest_account.unwrap();
+        let hospital_id: Option<Uuid> = sqlx::query_scalar(
             r#"SELECT hospital_id FROM hospital_wallets
                WHERE safehaven_account_number = $1 LIMIT 1"#,
         )
@@ -381,7 +402,7 @@ impl WalletService {
             .or_else(|| data.get("reference"))
             .and_then(|v| v.as_str());
 
-        let mut tx = self.pool.begin(). await?;
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
             r#"
             INSERT INTO hospital_wallets (hospital_id, balance_kobo)
@@ -407,7 +428,7 @@ impl WalletService {
                 Some("direct sub-account inflow"),
             )
             .await?;
-        tx.commit(). await?;
+        tx.commit().await?;
 
         Ok(WebhookOutcome::DepositCredited {
             deposit_id: Uuid::nil(),
