@@ -29,7 +29,6 @@ impl WalletRepository {
 
     /// Idempotently create the wallet row for a hospital
 
-
     pub async fn ensure_wallet_row(&self, hospital_id: Uuid) -> Result<(), WalletRepoError> {
         sqlx::query(
             r#"
@@ -153,12 +152,11 @@ impl WalletRepository {
         .fetch_all(&self.pool)
         .await?;
 
-        let total: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM wallet_ledger_entries WHERE hospital_id = $1",
-        )
-        .bind(hospital_id)
-        .fetch_one(&self.pool)
-        .await?;
+        let total: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM wallet_ledger_entries WHERE hospital_id = $1")
+                .bind(hospital_id)
+                .fetch_one(&self.pool)
+                .await?;
 
         Ok((rows, total))
     }
@@ -226,7 +224,6 @@ impl WalletRepository {
     }
 
     /// Inverse of `try_hold_in_tx` — escrowed funds go back to the available balance
-
 
     pub async fn release_hold_in_tx(
         &self,
@@ -392,7 +389,6 @@ impl WalletRepository {
 
     /// Mark a pending deposit as received, credit the wallet, append the ledger row
 
-
     pub async fn complete_deposit_in_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
@@ -450,7 +446,6 @@ impl WalletRepository {
     }
 
     /// Idempotent webhook insert. Returns `Some(id)` for a new event, `None` for a duplicate
-
 
     pub async fn insert_webhook_event_if_new(
         &self,
