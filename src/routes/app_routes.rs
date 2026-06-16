@@ -38,7 +38,6 @@ use crate::services::{
     shift_service::ShiftService, wallet_service::WalletService,
 };
 
-/// Shared application state
 #[derive(Clone)]
 pub struct AppState {
     pub pool: PgPool,
@@ -55,11 +54,9 @@ pub struct AppState {
     pub distance_service: Arc<DistanceService>,
 }
 
-/// API Documentation
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        // Health
         crate::handlers::health::health_check,
         crate::handlers::health::db_health_check,
         // Auth
@@ -67,13 +64,11 @@ pub struct AppState {
         crate::handlers::auth::email_otp_verify,
         crate::handlers::auth::refresh_token,
         crate::handlers::auth::logout,
-        // Hospital Registration (Admin)
         crate::handlers::registration::register_hospital,
         crate::handlers::registration::list_hospitals,
         crate::handlers::registration::get_registration_status,
         crate::handlers::registration::approve_hospital,
         crate::handlers::registration::reject_hospital,
-        // Clinician Registration
         crate::handlers::clinician_registration::send_otp,
         crate::handlers::clinician_registration::verify_otp,
         crate::handlers::clinician_registration::complete_profile,
@@ -125,7 +120,6 @@ pub struct AppState {
         crate::handlers::shifts::assign_shift,
         crate::handlers::shifts::cancel_shift,
         crate::handlers::shifts::reschedule_shift,
-        // Admin
         crate::handlers::admin::list_hospitals_admin,
         crate::handlers::admin::list_clinicians_admin,
         // Wallet
@@ -278,15 +272,12 @@ pub struct AppState {
     info(
         title = "NexusCare Hospital Management API",
         version = "1.0.0",
-        description = "Complete API for hospital management, clinician registration, authentication, and shift creation",
-        contact(
-            name = "NexusCare Support",
-            email = "support@nexuscare.com"
-        )
+        description = "Hospital management, ML pipeline, real-time SSE events",
+        contact(name = "NexusCare Support", email = "support@nexuscare.com")
     ),
     servers(
-        (url = "http://localhost:8080", description = "Local development server"),
-        (url = "https://api.nexuscare.com", description = "Production server")
+        (url = "http://localhost:8080", description = "Local development"),
+        (url = "https://api.nexuscare.com", description = "Production")
     ),
     tags(
         (name = "health", description = "Health check endpoints"),
@@ -340,7 +331,6 @@ pub fn create_router(
         .allow_methods(Any)
         .allow_headers(Any);
 
-    // Initialize repositories
     let hospital_repo = Arc::new(HospitalRepository::new(pool.clone()));
     let location_repo = Arc::new(LocationRepository::new(pool.clone()));
     // Held for wallet ledger; constructed here so the connection pool
@@ -348,11 +338,10 @@ pub fn create_router(
     let audit_repo = Arc::new(AuditRepository::new(pool.clone()));
     let clinician_repo = Arc::new(ClinicianRepository::new(pool.clone()));
     let shift_repo = Arc::new(ShiftRepository::new(pool.clone()));
+    let patient_repo = Arc::new(PatientRepository::new(pool.clone()));
+    let feedback_repo = Arc::new(FeedbackRepository::new(pool.clone()));
 
-    // Initialize external services
-    let geocoding_client = Arc::new(GeocodingClient::new(
-        std::env::var("GEOCODING_API_URL").ok(),
-    ));
+    let geocoding_client = Arc::new(GeocodingClient::new(std::env::var("GEOCODING_API_URL").ok()));
 
     let safehaven_client = Arc::new(SafeHavenClient::from_env());
 
@@ -390,7 +379,6 @@ pub fn create_router(
         pool.clone(),
     ));
 
-    // Initialize registration service
     let registration_service = Arc::new(RegistrationService::new(
         hospital_repo,
         location_service,
@@ -401,7 +389,6 @@ pub fn create_router(
         identity_service.clone(),
     ));
 
-    // Initialize clinician registration service
     let clinician_registration_service = Arc::new(ClinicianRegistrationService::new(
         clinician_repo.clone(),
         email_outbox_service.clone(),
@@ -411,10 +398,8 @@ pub fn create_router(
         identity_service.clone(),
     ));
 
-    // Initialize auth service
     let auth_service = Arc::new(AuthService::new(pool.clone(), email_outbox_service.clone()));
 
-    // Initialize shift service
     let shift_service = Arc::new(ShiftService::new(
         shift_repo,
         pool.clone(),
@@ -432,7 +417,6 @@ pub fn create_router(
         encryption_service.clone(),
     ));
 
-    // Create shared state
     let state = AppState {
         pool: pool.clone(),
         registration_service,
@@ -448,9 +432,7 @@ pub fn create_router(
         distance_service,
     };
 
-    // Create API routes
     let api_router = Router::new()
-        // Health
         .route("/health", get(health::health_check))
         .route("/health/db", get(health::db_health_check))
         // Auth (OTP-only).
