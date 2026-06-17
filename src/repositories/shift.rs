@@ -1060,7 +1060,7 @@ impl ShiftRepository {
         sqlx::query_as::<_, Shift>(
             r#"
             SELECT s.id, s.hospital_id, s.role_category, s.role_title, s.specialty,
-                   s.department, s.shift_type, s.status(), s.priority, s.urgency_bonus_pct,
+                   s.department, s.shift_type, s.status, s.priority, s.urgency_bonus_pct,
                    s.scheduled_start, s.duration_hours, s.scheduled_end,
                    s.assigned_clinician_id, s.rate_kobo_per_hour, s.fixed_rate_kobo,
                    s.pay_type, s.stat_bonus_kobo, s.effective_rate_kobo_per_hour,
@@ -1455,7 +1455,7 @@ impl ShiftRepository {
             SELECT
                 s.id, s.hospital_id, h.name as hospital_name,
                 s.role_category, s.role_title, s.specialty, s.department,
-                s.shift_type, s.status(), s.priority, s.urgency_bonus_pct,
+                s.shift_type, s.status, s.priority, s.urgency_bonus_pct,
                 s.scheduled_start, s.duration_hours, s.scheduled_end,
                 s.actual_start, s.actual_end, s.assigned_clinician_id,
                 s.rate_kobo_per_hour, s.fixed_rate_kobo, s.pay_type, s.stat_bonus_kobo,
@@ -1485,7 +1485,7 @@ impl ShiftRepository {
                 SELECT
                     s.id, s.hospital_id, h.name as hospital_name,
                     s.role_category, s.role_title, s.specialty, s.department,
-                    s.shift_type, s.status(), s.priority, s.urgency_bonus_pct,
+                    s.shift_type, s.status, s.priority, s.urgency_bonus_pct,
                     s.scheduled_start, s.duration_hours, s.scheduled_end,
                     s.actual_start, s.actual_end, s.assigned_clinician_id,
                     s.rate_kobo_per_hour, s.fixed_rate_kobo, s.pay_type, s.stat_bonus_kobo,
@@ -1511,7 +1511,7 @@ impl ShiftRepository {
                 SELECT
                     s.id, s.hospital_id, h.name as hospital_name,
                     s.role_category, s.role_title, s.specialty, s.department,
-                    s.shift_type, s.status(), s.priority, s.urgency_bonus_pct,
+                    s.shift_type, s.status, s.priority, s.urgency_bonus_pct,
                     s.scheduled_start, s.duration_hours, s.scheduled_end,
                     s.actual_start, s.actual_end, s.assigned_clinician_id,
                     s.rate_kobo_per_hour, s.fixed_rate_kobo, s.pay_type, s.stat_bonus_kobo,
@@ -1799,7 +1799,7 @@ impl ShiftRepository {
             SELECT
                 s.id, s.hospital_id, h.name as hospital_name,
                 s.role_category, s.role_title, s.specialty, s.department,
-                s.shift_type, s.status(), s.priority, s.urgency_bonus_pct,
+                s.shift_type, s.status, s.priority, s.urgency_bonus_pct,
                 s.scheduled_start, s.duration_hours, s.scheduled_end,
                 s.actual_start, s.actual_end, s.assigned_clinician_id,
                 s.rate_kobo_per_hour, s.fixed_rate_kobo, s.pay_type, s.stat_bonus_kobo,

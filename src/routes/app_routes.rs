@@ -131,6 +131,8 @@ pub struct AppState {
         crate::handlers::wallet::get_ledger,
         crate::handlers::wallet::create_deposit,
         crate::handlers::wallet::list_deposits,
+        crate::handlers::wallet::initiate_sub_account,
+        crate::handlers::wallet::provision_sub_account,
         crate::handlers::wallet::list_payouts,
         crate::handlers::wallet::get_payout_status,
         crate::handlers::wallet::get_statement,
@@ -187,6 +189,8 @@ pub struct AppState {
             crate::handlers::wallet::LedgerPage,
             crate::handlers::wallet::PayoutPage,
             crate::handlers::wallet::PayoutStatusResponse,
+            crate::handlers::wallet::ProvisionSubAccountRequest,
+            crate::handlers::wallet::SubAccountStatusResponse,
             crate::handlers::wallet::PayoutRetryResponse,
             crate::services::payout_service::PayoutRow,
             crate::handlers::earnings::EarningsSummary,
@@ -632,6 +636,16 @@ pub fn create_router(
             "/api/v1/wallet/deposits",
             post(wallet::create_deposit)
                 .get(wallet::list_deposits)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
+            "/api/v1/wallet/sub-account/initiate",
+            post(wallet::initiate_sub_account)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
+        )
+        .route(
+            "/api/v1/wallet/sub-account/provision",
+            post(wallet::provision_sub_account)
                 .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin, UserRole::SuperAdmin]))),
         )
         .route(
