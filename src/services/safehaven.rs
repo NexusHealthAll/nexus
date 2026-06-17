@@ -152,11 +152,16 @@ impl SafeHavenClient {
 
     pub fn from_env() -> Self {
         Self::new(
-            std::env::var("SAFEHAVEN_BASE_URL").unwrap_or_default(), std::env::var("SAFEHAVEN_CLIENT_ID").unwrap_or_default(), std::env::var("SAFEHAVEN_IBS_CLIENT_ID").unwrap_or_default(), std::env::var("SAFEHAVEN_DEBIT_ACCOUNT_NUMBER").unwrap_or_default(), std::env::var("SAFEHAVEN_BANK_CODE").unwrap_or_default(), )
+            std::env::var("SAFEHAVEN_BASE_URL").unwrap_or_default(),
+            std::env::var("SAFEHAVEN_CLIENT_ID").unwrap_or_default(),
+            std::env::var("SAFEHAVEN_IBS_CLIENT_ID").unwrap_or_default(),
+            std::env::var("SAFEHAVEN_DEBIT_ACCOUNT_NUMBER").unwrap_or_default(),
+            std::env::var("SAFEHAVEN_BANK_CODE").unwrap_or_default(),
+        )
     }
 
     pub fn is_mock(&self) -> bool {
-        self.base_url.trim(). is_empty()
+        self.base_url.trim().is_empty()
     }
 
     pub fn debit_account_number(&self) -> &str {
@@ -173,14 +178,13 @@ impl SafeHavenClient {
 
     /// Returns a cached or fresh OAuth2 access token. Refreshes 60s before expiry
 
-
     pub async fn get_access_token(&self) -> Result<String, SafeHavenError> {
         if self.is_mock() {
             return Ok("mock-access-token".to_string());
         }
 
         {
-            let cache = self.token.read(). await;
+            let cache = self.token.read().await;
             if let Some(t) = cache.as_ref() {
                 if Self::now_secs() < t.expires_at - 60 {
                     return Ok(t.access_token.clone());
@@ -193,8 +197,7 @@ impl SafeHavenClient {
             grant_type: "client_credentials",
             client_id: &self.client_id,
             client_assertion: &self.ibs_client_id,
-            client_assertion_type:
-                "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
         };
 
         let resp = self
@@ -206,24 +209,28 @@ impl SafeHavenClient {
             .send()
             .await?;
 
-        if !resp.status(). is_success() {
-            let status = resp.status(); let text = resp.text(). await.unwrap_or_default(); return Err(SafeHavenError::Auth(format!(
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(SafeHavenError::Auth(format!(
                 "HTTP {} from /oauth2/token: {}",
                 status, text
             )));
         }
 
-        let parsed: OAuthResponse = resp.json(). await.map_err(SafeHavenError::Request)?;
+        let parsed: OAuthResponse = resp.json().await.map_err(SafeHavenError::Request)?;
         let expires_at = Self::now_secs() + parsed.expires_in;
-        let token = parsed.access_token.clone(); let mut cache = self.token.write(). await;
+        let token = parsed.access_token.clone();
+        let mut cache = self.token.write().await;
         *cache = Some(TokenCache {
-            access_token: token.clone(), expires_at,
+            access_token: token.clone(),
+            expires_at,
         });
         Ok(token)
     }
 
     async fn post_authed(&self, path: &str, body: Value) -> Result<Value, SafeHavenError> {
-        let token = self.get_access_token(). await?;
+        let token = self.get_access_token().await?;
         let url = format!("{}{}", self.base_url, path);
         let resp = self
             .http
@@ -235,7 +242,8 @@ impl SafeHavenClient {
             .send()
             .await?;
 
-        let status = resp.status(); let value: Value = resp.json(). await.unwrap_or(Value::Null);
+        let status = resp.status();
+        let value: Value = resp.json().await.unwrap_or(Value::Null);
 
         // Detect business errors embedded in a 2xx response.
         if let Some(code) = value.get("statusCode").and_then(|v| v.as_i64()) {
@@ -263,7 +271,7 @@ impl SafeHavenClient {
     }
 
     async fn get_authed(&self, path: &str) -> Result<Value, SafeHavenError> {
-        let token = self.get_access_token(). await?;
+        let token = self.get_access_token().await?;
         let url = format!("{}{}", self.base_url, path);
         let resp = self
             .http
@@ -272,10 +280,10 @@ impl SafeHavenClient {
             .header("ClientID", &self.ibs_client_id)
             .send()
             .await?;
-        if !resp.status(). is_success() {
+        if !resp.status().is_success() {
             return Err(SafeHavenError::Rejected(format!("HTTP {}", resp.status())));
         }
-        Ok(resp.json(). await.unwrap_or(Value::Null))
+        Ok(resp.json().await.unwrap_or(Value::Null))
     }
 
     /// `POST /transfers/name-enquiry` — validates the account and returns the
@@ -286,11 +294,11 @@ impl SafeHavenClient {
         account_number: &str,
     ) -> Result<ResolvedBankAccount, SafeHavenError> {
         if self.is_mock() {
-            tracing::info!(
-                "[SAFEHAVEN MOCK] name_enquiry bank={bank_code} acct={account_number}"
-            );
+            tracing::info!("[SAFEHAVEN MOCK] name_enquiry bank={bank_code} acct={account_number}");
             return Ok(ResolvedBankAccount {
-                account_name: "MOCK ACCOUNT HOLDER".to_string(), account_number: account_number.to_string(), session_id: Some(format!("mock-session-{}", Uuid::new_v4())),
+                account_name: "MOCK ACCOUNT HOLDER".to_string(),
+                account_number: account_number.to_string(),
+                session_id: Some(format!("mock-session-{}", Uuid::new_v4())),
             });
         }
 
@@ -305,14 +313,14 @@ impl SafeHavenClient {
         let account_name = data
             .get("accountName")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| {
-                SafeHavenError::MalformedResponse("missing accountName".to_string())
-            })?
-            .to_string(); let resolved_number = data
+            .ok_or_else(|| SafeHavenError::MalformedResponse("missing accountName".to_string()))?
+            .to_string();
+        let resolved_number = data
             .get("accountNumber")
             .and_then(|v| v.as_str())
             .unwrap_or(account_number)
-            .to_string(); let session_id = data
+            .to_string();
+        let session_id = data
             .get("sessionId")
             .and_then(|v| v.as_str())
             .map(str::to_string);
@@ -345,7 +353,9 @@ impl SafeHavenClient {
                 "[SAFEHAVEN MOCK] create_sub_account hospital_ref={external_reference} acct={acct}"
             );
             return Ok(SubAccount {
-                id: id.clone(), account_number: acct.clone(), bank_code: Some(self.bank_code.clone()),
+                id: id.clone(),
+                account_number: acct.clone(),
+                bank_code: Some(self.bank_code.clone()),
                 account_name: Some(email.to_string()),
                 raw: json!({ "_id": id, "accountNumber": acct }),
             });
@@ -365,7 +375,8 @@ impl SafeHavenClient {
             "autoSweep": false,
         });
         let value = self.post_authed("/accounts/v2/subaccount", body).await?;
-        let data = value.get("data").unwrap_or(&value).clone(); Ok(SubAccount {
+        let data = value.get("data").unwrap_or(&value).clone();
+        Ok(SubAccount {
             id: data
                 .get("_id")
                 .or_else(|| data.get("id"))
@@ -373,11 +384,13 @@ impl SafeHavenClient {
                 .ok_or_else(|| {
                     SafeHavenError::MalformedResponse("missing sub-account id".to_string())
                 })?
-                .to_string(), account_number: data
+                .to_string(),
+            account_number: data
                 .get("accountNumber")
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
-                .to_string(), bank_code: data
+                .to_string(),
+            bank_code: data
                 .get("bankCode")
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
@@ -407,7 +420,8 @@ impl SafeHavenClient {
             );
             return Ok(VirtualAccount {
                 id: Some(format!("mock-va-{}", Uuid::new_v4())),
-                account_number: acct.clone(), bank_code: Some(self.bank_code.clone()),
+                account_number: acct.clone(),
+                bank_code: Some(self.bank_code.clone()),
                 account_name: Some("NEXUSCARE DEPOSIT".to_string()),
                 raw: json!({ "accountNumber": acct, "externalReference": external_reference }),
             });
@@ -428,7 +442,8 @@ impl SafeHavenClient {
             "externalReference": external_reference,
         });
         let value = self.post_authed("/virtual-accounts", body).await?;
-        let data = value.get("data").unwrap_or(&value).clone(); Ok(VirtualAccount {
+        let data = value.get("data").unwrap_or(&value).clone();
+        Ok(VirtualAccount {
             id: data
                 .get("_id")
                 .or_else(|| data.get("id"))
@@ -440,7 +455,8 @@ impl SafeHavenClient {
                 .ok_or_else(|| {
                     SafeHavenError::MalformedResponse("missing virtual accountNumber".to_string())
                 })?
-                .to_string(), bank_code: data
+                .to_string(),
+            bank_code: data
                 .get("bankCode")
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
@@ -469,7 +485,8 @@ impl SafeHavenClient {
             );
             return Ok(TransferReceipt {
                 session_id: Some(format!("mock-tx-{}", Uuid::new_v4())),
-                payment_reference: payment_reference.to_string(), raw: json!({
+                payment_reference: payment_reference.to_string(),
+                raw: json!({
                     "status": "Completed",
                     "amount": amount_naira,
                     "paymentReference": payment_reference,
@@ -481,8 +498,7 @@ impl SafeHavenClient {
             .name_enquiry(beneficiary_bank_code, beneficiary_account_number)
             .await?;
         let session_id = enquiry.session_id.ok_or_else(|| {
-            SafeHavenError::MalformedResponse(
-                "name-enquiry did not return sessionId".to_string(), )
+            SafeHavenError::MalformedResponse("name-enquiry did not return sessionId".to_string())
         })?;
 
         let body = json!({
@@ -497,7 +513,8 @@ impl SafeHavenClient {
         });
 
         let value = self.post_authed("/transfers", body).await?;
-        let data = value.get("data").unwrap_or(&value).clone(); Ok(TransferReceipt {
+        let data = value.get("data").unwrap_or(&value).clone();
+        Ok(TransferReceipt {
             session_id: data
                 .get("sessionId")
                 .and_then(|v| v.as_str())
@@ -506,7 +523,8 @@ impl SafeHavenClient {
                 .get("paymentReference")
                 .and_then(|v| v.as_str())
                 .unwrap_or(payment_reference)
-                .to_string(), raw: data,
+                .to_string(),
+            raw: data,
         })
     }
 
@@ -528,10 +546,9 @@ impl SafeHavenClient {
             )
             .await?;
         let data = body.get("data").unwrap_or(&body);
-        let status = data
-            .get("status")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| SafeHavenError::MalformedResponse("missing transfer status".to_string()))?;
+        let status = data.get("status").and_then(|v| v.as_str()).ok_or_else(|| {
+            SafeHavenError::MalformedResponse("missing transfer status".to_string())
+        })?;
         Ok(TransferStatus::parse(status))
     }
 
@@ -672,7 +689,11 @@ mod tests {
     fn mock_client() -> SafeHavenClient {
         SafeHavenClient::new(
             String::new(), // empty base_url => mock mode
-            "test-client".to_string(), "test-ibs".to_string(), "0000000000".to_string(), "090286".to_string(), )
+            "test-client".to_string(),
+            "test-ibs".to_string(),
+            "0000000000".to_string(),
+            "090286".to_string(),
+        )
     }
 
     #[tokio::test]
@@ -696,7 +717,10 @@ mod tests {
     #[tokio::test]
     async fn mock_initiate_identity_returns_id() {
         let c = mock_client();
-        let id = c.initiate_identity_verification("BVN", "12345678901").await.unwrap();
+        let id = c
+            .initiate_identity_verification("BVN", "12345678901")
+            .await
+            .unwrap();
         assert!(id.starts_with("mock-identity-"));
     }
 
@@ -746,11 +770,20 @@ mod tests {
 
     #[test]
     fn transfer_status_parsing() {
-        assert_eq!(TransferStatus::parse("Completed"), TransferStatus::Completed);
-        assert_eq!(TransferStatus::parse("Processing"), TransferStatus::Processing);
+        assert_eq!(
+            TransferStatus::parse("Completed"),
+            TransferStatus::Completed
+        );
+        assert_eq!(
+            TransferStatus::parse("Processing"),
+            TransferStatus::Processing
+        );
         assert_eq!(TransferStatus::parse("Failed"), TransferStatus::Failed);
         assert_eq!(TransferStatus::parse("Canceled"), TransferStatus::Cancelled);
-        assert!(matches!(TransferStatus::parse("weird"), TransferStatus::Unknown(_)));
+        assert!(matches!(
+            TransferStatus::parse("weird"),
+            TransferStatus::Unknown(_)
+        ));
     }
 
     #[tokio::test]

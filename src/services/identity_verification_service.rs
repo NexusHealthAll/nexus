@@ -82,7 +82,11 @@ impl IdentityVerificationService {
         encryption: Arc<EncryptionService>,
         repo: Arc<IdentityVerificationRepository>,
     ) -> Self {
-        Self { safehaven, encryption, repo }
+        Self {
+            safehaven,
+            encryption,
+            repo,
+        }
     }
 
     /// Initiate BVN/NIN verification: calls SafeHaven (which sends an OTP),
@@ -137,7 +141,9 @@ impl IdentityVerificationService {
             .get(owner.as_str(), owner_id, id_type.as_db())
             .await?
             .ok_or(IdentityError::NotInitiated)?;
-        let identity_id = row.provider_identity_id.ok_or(IdentityError::NotInitiated)?;
+        let identity_id = row
+            .provider_identity_id
+            .ok_or(IdentityError::NotInitiated)?;
 
         let payload = self
             .safehaven
