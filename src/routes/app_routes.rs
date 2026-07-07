@@ -24,9 +24,8 @@ use crate::handlers::{
 };
 use crate::repositories::{
     audit::AuditRepository, billing::BillingRepository, clinician::ClinicianRepository,
-    feedback::FeedbackRepository, hospital::HospitalRepository,
-    identity_verification::IdentityVerificationRepository, location::LocationRepository,
-    patient::PatientRepository, shift::ShiftRepository, wallet::WalletRepository,
+    hospital::HospitalRepository, identity_verification::IdentityVerificationRepository,
+    location::LocationRepository, shift::ShiftRepository, wallet::WalletRepository,
 };
 use crate::services::{
     audit_service::AuditService, auth_service::AuthService,
@@ -343,8 +342,6 @@ pub fn create_router(
     let audit_repo = Arc::new(AuditRepository::new(pool.clone()));
     let clinician_repo = Arc::new(ClinicianRepository::new(pool.clone()));
     let shift_repo = Arc::new(ShiftRepository::new(pool.clone()));
-    let patient_repo = Arc::new(PatientRepository::new(pool.clone()));
-    let feedback_repo = Arc::new(FeedbackRepository::new(pool.clone()));
 
     let geocoding_client = Arc::new(GeocodingClient::new(std::env::var("GEOCODING_API_URL").ok()));
 
