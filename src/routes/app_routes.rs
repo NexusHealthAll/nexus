@@ -24,8 +24,9 @@ use crate::handlers::{
 };
 use crate::repositories::{
     audit::AuditRepository, billing::BillingRepository, clinician::ClinicianRepository,
-    hospital::HospitalRepository, identity_verification::IdentityVerificationRepository,
-    location::LocationRepository, shift::ShiftRepository, wallet::WalletRepository,
+    feedback::FeedbackRepository, hospital::HospitalRepository,
+    identity_verification::IdentityVerificationRepository, location::LocationRepository,
+    patient::PatientRepository, shift::ShiftRepository, wallet::WalletRepository,
 };
 use crate::services::{
     audit_service::AuditService, auth_service::AuthService,
