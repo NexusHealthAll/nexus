@@ -165,6 +165,10 @@ pub struct NewHospital {
     pub phone: String,
     pub registration_number: String,
     pub admin_user_id: Option<Uuid>,
+    /// Stashed on the row at registration time so we can create the admin
+    /// users row at approval time (not before).
+    pub admin_first_name: String,
+    pub admin_last_name: String,
 }
 
 /// New location record for creation (AC-02)
