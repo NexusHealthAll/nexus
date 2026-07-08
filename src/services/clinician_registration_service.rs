@@ -136,10 +136,10 @@ impl ClinicianRegistrationService {
 
         // Create user + clinician in a transaction
         let mut tx = self.pool.begin().await?;
-        let clinician_id = self.repo.create_clinician(&mut tx, email).await?;
+        let (clinician_id, user_id) = self.repo.create_clinician(&mut tx, email).await?;
         tx.commit().await?;
 
-        let token = issue_jwt(clinician_id);
+        let token = issue_jwt(user_id);
 
         let content = email_templates::clinician_welcome(None);
         self.email_outbox.enqueue_email(email, &content).await?;
@@ -264,7 +264,8 @@ fn mask_account(account: &str) -> String {
 }
 
 /// Minimal JWT issuance — reuses the same secret as the rest of the app.
-fn issue_jwt(clinician_id: Uuid) -> String {
+/// `sub` is the users.id (not clinicians.id) to match extract_claims across the app.
+fn issue_jwt(user_id: Uuid) -> String {
     use chrono::Utc;
     use jsonwebtoken::{encode, EncodingKey, Header};
     use serde::{Deserialize, Serialize};
@@ -280,8 +281,8 @@ fn issue_jwt(clinician_id: Uuid) -> String {
     let secret = std::env::var("JWT_SECRET").unwrap_or_else(|_| "dev_secret".to_string());
     let now = Utc::now().timestamp() as usize;
     let claims = Claims {
-        sub: clinician_id.to_string(),
-        role: "staff".to_string(),
+        sub: user_id.to_string(),
+        role: "health_worker".to_string(),
         exp: now + 86400,
         iat: now,
     };

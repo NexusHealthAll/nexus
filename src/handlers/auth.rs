@@ -1,13 +1,22 @@
-use axum::{extract::State, http::StatusCode, Json};
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    Json,
+};
+use chrono::{DateTime, Utc};
+use serde::Serialize;
+use utoipa::ToSchema;
+use uuid::Uuid;
 use validator::Validate;
 
 use crate::{
     models::user::{
-        EmailLoginRequest, EmailOtpVerifyRequest, LoginResponse, LogoutRequest, RefreshTokenRequest,
+        EmailLoginRequest, EmailOtpVerifyRequest, LoginResponse, LogoutRequest,
+        RefreshTokenRequest, UserResponse,
     },
     routes::AppState,
     services::auth_service::AuthError,
-    utils::errors::{AppError, AppResult},
+    utils::{errors::{AppError, AppResult}, extract_claims},
 };
 
 // Email OTP login — the only authentication path.
@@ -134,6 +143,134 @@ pub async fn logout(
         .await
         .map(|_| StatusCode::NO_CONTENT)
         .map_err(auth_err_to_app)
+}
+
+// GET /api/v1/auth/me — return the logged-in user's profile.
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct MeResponse {
+    pub user: UserResponse,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub clinician: Option<ClinicianProfile>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hospital: Option<HospitalProfile>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ClinicianProfile {
+    pub id: Uuid,
+    pub specialty: String,
+    pub role_title: String,
+    pub rating: f32,
+    pub rating_count: i32,
+    pub is_verified: bool,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HospitalProfile {
+    pub id: Uuid,
+    pub name: String,
+    pub email: String,
+    pub registration_number: String,
+    pub verification_status: String,
+    pub admin_registration_status: Option<String>,
+    pub approved_at: Option<DateTime<Utc>>,
+}
+
+/// GET /api/v1/auth/me
+#[utoipa::path(
+    get,
+    path = "/api/v1/auth/me",
+    responses(
+        (status = 200, description = "Current user profile", body = MeResponse),
+        (status = 401, description = "Missing or invalid token"),
+        (status = 404, description = "User not found")
+    ),
+    tag = "auth",
+    summary = "Get the logged-in user's profile",
+    description = "Returns the base user record plus role-specific detail (clinician or hospital)."
+)]
+pub async fn me(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> AppResult<Json<MeResponse>> {
+    let claims = extract_claims(&headers)?;
+    let user_id = Uuid::parse_str(&claims.sub)
+        .map_err(|_| AppError::Unauthorized("Invalid user ID in token".to_string()))?;
+
+    let user = state
+        .auth_service
+        .fetch_user_by_id(user_id)
+        .await
+        .map_err(auth_err_to_app)?;
+
+    // Role-specific detail. Fetched with lightweight, targeted queries so we
+    // don't pull unrelated data.
+    let clinician = sqlx::query_as::<_, (Uuid, String, String, f32, i32, bool)>(
+        r#"
+        SELECT id,
+               specialty::text AS specialty,
+               role_title,
+               rating,
+               rating_count,
+               is_verified
+        FROM clinicians
+        WHERE user_id = $1
+        "#,
+    )
+    .bind(user_id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(AppError::Database)?
+    .map(|(id, specialty, role_title, rating, rating_count, is_verified)| ClinicianProfile {
+        id,
+        specialty,
+        role_title,
+        rating,
+        rating_count,
+        is_verified,
+    });
+
+    let hospital = if let Some(hospital_id) = user.hospital_id {
+        sqlx::query_as::<_, (Uuid, String, String, String, String, Option<String>, Option<DateTime<Utc>>)>(
+            r#"
+            SELECT id,
+                   name,
+                   email,
+                   registration_number,
+                   verification_status::text        AS verification_status,
+                   admin_registration_status::text  AS admin_registration_status,
+                   approved_at
+            FROM hospitals
+            WHERE id = $1
+            "#,
+        )
+        .bind(hospital_id)
+        .fetch_optional(&state.pool)
+        .await
+        .map_err(AppError::Database)?
+        .map(
+            |(id, name, email, registration_number, verification_status, admin_registration_status, approved_at)| {
+                HospitalProfile {
+                    id,
+                    name,
+                    email,
+                    registration_number,
+                    verification_status,
+                    admin_registration_status,
+                    approved_at,
+                }
+            },
+        )
+    } else {
+        None
+    };
+
+    Ok(Json(MeResponse {
+        user: UserResponse::from(user),
+        clinician,
+        hospital,
+    }))
 }
 
 // Error mapping

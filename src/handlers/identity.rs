@@ -230,6 +230,9 @@ fn map_err(e: IdentityError) -> AppError {
         IdentityError::NotInitiated => {
             AppError::Validation("Verification has not been initiated".to_string())
         }
+        IdentityError::NumberAlreadyInUse => AppError::Conflict(
+            "This BVN/NIN is already verified for another account".to_string(),
+        ),
         IdentityError::Provider(e) => {
             AppError::Validation(format!("Identity verification failed: {e}"))
         }

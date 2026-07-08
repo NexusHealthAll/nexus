@@ -62,6 +62,7 @@ pub struct AppState {
         // Auth
         crate::handlers::auth::email_otp_send,
         crate::handlers::auth::email_otp_verify,
+        crate::handlers::auth::me,
         crate::handlers::auth::refresh_token,
         crate::handlers::auth::logout,
         crate::handlers::registration::register_hospital,
@@ -219,6 +220,9 @@ pub struct AppState {
             crate::models::shift::ShiftRescheduleRequest,
             crate::models::user::UserResponse,
             crate::models::user::LoginResponse,
+            crate::handlers::auth::MeResponse,
+            crate::handlers::auth::ClinicianProfile,
+            crate::handlers::auth::HospitalProfile,
             crate::models::user::EmailLoginRequest,
             crate::models::user::EmailOtpVerifyRequest,
             crate::models::user::RefreshTokenRequest,
@@ -342,8 +346,6 @@ pub fn create_router(
     let audit_repo = Arc::new(AuditRepository::new(pool.clone()));
     let clinician_repo = Arc::new(ClinicianRepository::new(pool.clone()));
     let shift_repo = Arc::new(ShiftRepository::new(pool.clone()));
-    let patient_repo = Arc::new(PatientRepository::new(pool.clone()));
-    let feedback_repo = Arc::new(FeedbackRepository::new(pool.clone()));
 
     let geocoding_client = Arc::new(GeocodingClient::new(std::env::var("GEOCODING_API_URL").ok()));
 
@@ -444,6 +446,7 @@ pub fn create_router(
         .route("/api/v1/auth/otp/verify", post(auth::email_otp_verify))
         .route("/api/v1/auth/refresh", post(auth::refresh_token))
         .route("/api/v1/auth/logout", post(auth::logout))
+        .route("/api/v1/auth/me", get(auth::me))
         // Hospital Registration
         .route(
             "/api/v1/hospitals/register",

@@ -42,14 +42,16 @@ impl HospitalRepository {
                 address,
                 phone_number,
                 admin_user_id,
+                admin_first_name,
+                admin_last_name,
                 admin_registration_status,
                 verification_status,
                 registration_step
             )
-            VALUES ($1, $2, $3, $4, $5, $6, 'pending', 'pending', 'profile_setup')
-            RETURNING 
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending', 'pending', 'profile_setup')
+            RETURNING
                 id, name, registration_number, email, address, phone_number,
-                verification_status, registration_step, 
+                verification_status, registration_step,
                 admin_registration_status, approved_by, approved_at, rejection_reason, admin_user_id,
                 legal_submitted_at, setup_progress_percent, logo_url, created_at, updated_at
             "#,
@@ -57,9 +59,11 @@ impl HospitalRepository {
         .bind(&hospital.name)
         .bind(&hospital.registration_number)
         .bind(&hospital.email)
-        .bind(format!("{}", hospital.email)) // Using email as temporary address
+        .bind(&hospital.email) // Placeholder address; overwritten by geocode_and_store.
         .bind(&hospital.phone)
-        .bind(&hospital.admin_user_id)
+        .bind(hospital.admin_user_id)
+        .bind(&hospital.admin_first_name)
+        .bind(&hospital.admin_last_name)
         .fetch_one(&mut **tx)
         .await;
 

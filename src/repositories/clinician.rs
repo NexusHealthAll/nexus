@@ -34,11 +34,14 @@ impl ClinicianRepository {
 
     /// Create user + clinician row atomically. OTP-only auth: the
 
+    /// Create the `users` + `clinicians` pair atomically. Returns
+    /// `(clinician_id, user_id)` so callers can put the user_id in the JWT
+    /// `sub` claim, matching the convention used by the rest of the app.
     pub async fn create_clinician(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         email: &str,
-    ) -> Result<Uuid, ClinicianRepoError> {
+    ) -> Result<(Uuid, Uuid), ClinicianRepoError> {
         let user_id: Uuid = sqlx::query_scalar(
             r#"
             INSERT INTO users (first_name, last_name, email, role)
@@ -50,7 +53,6 @@ impl ClinicianRepository {
         .fetch_one(&mut **tx)
         .await?;
 
-        // Create clinician row linked to user
         let clinician_id: Uuid = sqlx::query_scalar(
             r#"
             INSERT INTO clinicians (id, user_id, first_name, last_name, specialty, role_title)
@@ -62,7 +64,7 @@ impl ClinicianRepository {
         .fetch_one(&mut **tx)
         .await?;
 
-        Ok(clinician_id)
+        Ok((clinician_id, user_id))
     }
 
     /// Save completed profile fields

@@ -316,7 +316,7 @@ impl AuthService {
         .ok_or(AuthError::NotFound)
     }
 
-    async fn fetch_user_by_id(&self, id: Uuid) -> Result<User, AuthError> {
+    pub async fn fetch_user_by_id(&self, id: Uuid) -> Result<User, AuthError> {
         sqlx::query_as(
             "SELECT id, hospital_id, first_name, last_name, email, phone, password_hash,
                     role, role_label, avatar_url, is_active, last_login_at, created_at, updated_at
