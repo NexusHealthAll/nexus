@@ -124,6 +124,8 @@ impl RegistrationService {
             phone: request.phone.clone(),
             registration_number: request.registration_number.clone(),
             admin_user_id: None,
+            admin_first_name: request.admin_first_name.clone(),
+            admin_last_name: request.admin_last_name.clone(),
         };
 
         let hospital = self.hospital_repo.create(&mut tx, new_hospital).await?;
@@ -134,29 +136,9 @@ impl RegistrationService {
             .geocode_and_store(&mut tx, hospital_id, request.address.clone())
             .await?;
 
-        // Create the hospital-admin user row so they can log in via OTP after
-        let admin_user_id: Uuid = sqlx::query_scalar(
-            r#"
-            INSERT INTO users (hospital_id, first_name, last_name, email, phone, role, is_active)
-            VALUES ($1, $2, $3, $4, $5, 'hospital_admin', FALSE)
-            RETURNING id
-            "#,
-        )
-        .bind(hospital_id)
-        .bind(&request.admin_first_name)
-        .bind(&request.admin_last_name)
-        .bind(&request.email)
-        .bind(&request.phone)
-        .fetch_one(&mut *tx)
-        .await?;
-
-        // Link the hospital row back to its admin user.
-        sqlx::query("UPDATE hospitals SET admin_user_id = $1 WHERE id = $2")
-            .bind(admin_user_id)
-            .bind(hospital_id)
-            .execute(&mut *tx)
-            .await?;
-
+        // The admin's `users` row is intentionally NOT created here — it's
+        // created at approval time by `approve_hospital` so no orphan account
+        // exists while the hospital is pending or rejected.
         tx.commit().await?;
 
         let registration_details = RegistrationDetails {
@@ -328,19 +310,41 @@ impl RegistrationService {
             )
             .await?;
 
-        // Activate the admin user row so OTP login starts working. We created
-        sqlx::query(
+        // Create the hospital-admin `users` row now that the hospital is
+        // approved. Registration stashed the admin's name on the hospitals
+        // row; here we materialise the user account so OTP login works.
+        // Idempotent: if a users row already exists for this hospital (e.g.
+        // approval was retried), just activate it.
+        let (admin_first_name, admin_last_name): (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT admin_first_name, admin_last_name FROM hospitals WHERE id = $1",
+        )
+        .bind(hospital_id)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        let admin_user_id: Uuid = sqlx::query_scalar(
             r#"
-            UPDATE users
-               SET is_active = TRUE,
-                   updated_at = NOW()
-             WHERE hospital_id = $1
-               AND role = 'hospital_admin'
+            INSERT INTO users (hospital_id, first_name, last_name, email, phone, role, is_active)
+            VALUES ($1, $2, $3, $4, $5, 'hospital_admin', TRUE)
+            ON CONFLICT (email) DO UPDATE
+              SET is_active  = TRUE,
+                  updated_at = NOW()
+            RETURNING id
             "#,
         )
         .bind(hospital_id)
-        .execute(&mut *tx)
+        .bind(admin_first_name.unwrap_or_default())
+        .bind(admin_last_name.unwrap_or_default())
+        .bind(&hospital.email)
+        .bind(&hospital.phone_number)
+        .fetch_one(&mut *tx)
         .await?;
+
+        sqlx::query("UPDATE hospitals SET admin_user_id = $1 WHERE id = $2")
+            .bind(admin_user_id)
+            .bind(hospital_id)
+            .execute(&mut *tx)
+            .await?;
 
         tx.commit().await?;
 

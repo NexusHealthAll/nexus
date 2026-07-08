@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::repositories::identity_verification::{
@@ -6,6 +7,16 @@ use crate::repositories::identity_verification::{
 };
 use crate::services::encryption::EncryptionService;
 use crate::services::safehaven::{SafeHavenClient, SafeHavenError};
+
+/// Deterministic salted SHA-256 of a raw BVN/NIN, hex-encoded. The salt
+/// blocks trivial rainbow-table attacks against 11-digit inputs.
+fn number_hash(number: &str) -> String {
+    let salt = std::env::var("ENCRYPTION_SALT").unwrap_or_default();
+    let mut hasher = Sha256::new();
+    hasher.update(salt.as_bytes());
+    hasher.update(number.as_bytes());
+    hex::encode(hasher.finalize())
+}
 
 /// Who an identity verification belongs to.
 #[derive(Debug, Clone, Copy)]
@@ -62,6 +73,8 @@ pub enum IdentityError {
     Validation(String),
     #[error("Verification has not been initiated for this identity")]
     NotInitiated,
+    #[error("This BVN/NIN has already been verified for another account")]
+    NumberAlreadyInUse,
     #[error("Payment provider error: {0}")]
     Provider(#[from] SafeHavenError),
     #[error("Encryption error: {0}")]
@@ -90,7 +103,8 @@ impl IdentityVerificationService {
     }
 
     /// Initiate BVN/NIN verification: calls SafeHaven (which sends an OTP),
-    /// encrypts the number, and stores a pending row.
+    /// encrypts the number, and stores a pending row. Rejects the request if
+    /// the same number is already verified against a different owner.
     pub async fn initiate(
         &self,
         owner: IdentityOwner,
@@ -103,6 +117,16 @@ impl IdentityVerificationService {
             return Err(IdentityError::Validation(
                 "BVN/NIN must be 11 digits".to_string(),
             ));
+        }
+
+        let hash = number_hash(number);
+
+        if self
+            .repo
+            .is_number_taken(id_type.as_db(), &hash, owner.as_str(), owner_id)
+            .await?
+        {
+            return Err(IdentityError::NumberAlreadyInUse);
         }
 
         let identity_id = self
@@ -121,6 +145,7 @@ impl IdentityVerificationService {
                 owner_id,
                 id_type.as_db(),
                 &encrypted,
+                &hash,
                 &identity_id,
             )
             .await?;
@@ -144,6 +169,22 @@ impl IdentityVerificationService {
         let identity_id = row
             .provider_identity_id
             .ok_or(IdentityError::NotInitiated)?;
+
+        // Guard the race: another owner may have completed verification of
+        // the same number while this row sat as `pending`. Decrypt our copy
+        // and re-check before spending the OTP against SafeHaven.
+        let raw = self
+            .encryption
+            .decrypt_token(&row.identity_number)
+            .map_err(|e| IdentityError::Encryption(e.to_string()))?;
+        let hash = number_hash(&raw);
+        if self
+            .repo
+            .is_number_taken(id_type.as_db(), &hash, owner.as_str(), owner_id)
+            .await?
+        {
+            return Err(IdentityError::NumberAlreadyInUse);
+        }
 
         let payload = self
             .safehaven
