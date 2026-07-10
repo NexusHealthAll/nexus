@@ -1272,6 +1272,43 @@ impl ShiftRepository {
         .await
     }
 
+    /// Ordered task labels for a shift (SCRUM-25 / US-09 AC-03), i.e. the
+    /// `task` category of `shift_description_items`.
+    pub async fn list_shift_tasks(&self, shift_id: Uuid) -> Result<Vec<String>, sqlx::Error> {
+        sqlx::query_scalar::<_, String>(
+            r#"
+            SELECT label
+            FROM shift_description_items
+            WHERE shift_id = $1 AND category = 'task'
+            ORDER BY sort_order ASC, created_at ASC
+            "#,
+        )
+        .bind(shift_id)
+        .fetch_all(&self.pool)
+        .await
+    }
+
+    /// Average score (1–5) and count of submitted ratings for a hospital
+    /// (SCRUM-25 / US-09 AC-05). Returns `(None, 0)` when the hospital has no
+    /// ratings yet.
+    pub async fn hospital_rating_summary(
+        &self,
+        hospital_id: Uuid,
+    ) -> Result<(Option<f64>, i64), sqlx::Error> {
+        let row = sqlx::query_as::<_, (Option<f64>, i64)>(
+            r#"
+            SELECT AVG(score)::float8 AS average,
+                   COUNT(*)          AS count
+            FROM shift_ratings
+            WHERE ratee_kind = 'hospital' AND ratee_id = $1
+            "#,
+        )
+        .bind(hospital_id)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row)
+    }
+
     /// Insert a clock-in approval request. Returns the record id.
 
     pub async fn create_clockin_approval_request(
