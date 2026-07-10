@@ -115,6 +115,18 @@ pub enum ShiftServiceError {
 
     #[error("Wallet error: {0}")]
     WalletError(String),
+
+    #[error("Worker location required to list nearby shifts")]
+    LocationRequired,
+}
+
+/// A worker's origin for nearby-shift discovery: live GPS supplied on the
+/// request. Persisted as the last-known location when present.
+#[derive(Debug, Clone, Copy)]
+pub struct WorkerOrigin {
+    pub lat: f64,
+    pub lng: f64,
+    pub accuracy_meters: Option<f32>,
 }
 
 pub struct ShiftService {
@@ -1426,13 +1438,23 @@ impl ShiftService {
         Ok(updated)
     }
 
-    /// "Shifts Near You" for the authenticated worker. Returns
-
+    /// Worker shift discovery (SCRUM-24 / US-08). Returns open shifts within
+    /// `radius_km` of the worker's origin, ranked by urgency then distance.
+    ///
+    /// The origin is resolved in priority order: live GPS from the request (also
+    /// persisted for later use), else the worker's last-known location. When
+    /// neither is available a [`ShiftServiceError::LocationRequired`] is returned
+    /// so the caller can prompt for location access. Filtering, sorting and
+    /// paging are performed in SQL — see [`ShiftRepository::list_nearby_shifts`].
     pub async fn list_nearby_shifts_for_worker(
         &self,
         worker_user_id: Uuid,
+        origin: Option<WorkerOrigin>,
+        radius_km: f64,
+        limit: i64,
+        offset: i64,
     ) -> Result<Vec<crate::models::shift::NearbyShiftCard>, ShiftServiceError> {
-        use crate::models::shift::{NearbyShiftCard, ShiftPriority, ShiftType};
+        use crate::models::shift::NearbyShiftCard;
 
         let clinician_id = self
             .shift_repo
@@ -1440,66 +1462,48 @@ impl ShiftService {
             .await?
             .ok_or(ShiftServiceError::NoClinicianProfile)?;
 
+        // Resolve the origin: live GPS wins and is persisted; otherwise fall
+        // back to the last-known location; otherwise ask the caller for one.
+        let (origin_lat, origin_lng) = match origin {
+            Some(o) => {
+                self.shift_repo
+                    .upsert_clinician_location(clinician_id, o.lat, o.lng, o.accuracy_meters)
+                    .await?;
+                (o.lat, o.lng)
+            }
+            None => self
+                .shift_repo
+                .get_clinician_location(clinician_id)
+                .await?
+                .ok_or(ShiftServiceError::LocationRequired)?,
+        };
+
         let rows = self
             .shift_repo
-            .list_open_shifts_for_worker(clinician_id)
+            .list_nearby_shifts(clinician_id, origin_lat, origin_lng, radius_km, limit, offset)
             .await?;
 
-        let mut cards: Vec<NearbyShiftCard> = rows
+        // Rows arrive already filtered, ranked and paged; map them 1:1.
+        let cards = rows
             .into_iter()
-            .map(|r| {
-                // Distance only meaningful for in-person shifts with both endpoints.
-                let distance_km = match (
-                    r.shift_type.clone(),
-                    r.hospital_lat,
-                    r.hospital_lng,
-                    r.clinician_lat,
-                    r.clinician_lng,
-                ) {
-                    (ShiftType::InPerson, Some(h_lat), Some(h_lng), Some(c_lat), Some(c_lng)) => {
-                        Some(crate::utils::geo::haversine_km(h_lat, h_lng, c_lat, c_lng))
-                    }
-                    _ => None,
-                };
-                NearbyShiftCard {
-                    shift_id: r.shift_id,
-                    hospital_id: r.hospital_id,
-                    hospital_name: r.hospital_name,
-                    role_title: r.role_title,
-                    specialty: r.specialty,
-                    shift_type: r.shift_type,
-                    priority: r.priority,
-                    scheduled_start: r.scheduled_start,
-                    duration_hours: r.duration_hours,
-                    pay_type: r.pay_type,
-                    rate_kobo_per_hour: r.rate_kobo_per_hour,
-                    fixed_rate_kobo: r.fixed_rate_kobo,
-                    stat_bonus_kobo: r.stat_bonus_kobo,
-                    distance_km,
-                    interest_expressed: r.interest_expressed,
-                }
+            .map(|r| NearbyShiftCard {
+                shift_id: r.shift_id,
+                hospital_id: r.hospital_id,
+                hospital_name: r.hospital_name,
+                role_title: r.role_title,
+                specialty: r.specialty,
+                shift_type: r.shift_type,
+                priority: r.priority,
+                scheduled_start: r.scheduled_start,
+                duration_hours: r.duration_hours,
+                pay_type: r.pay_type,
+                rate_kobo_per_hour: r.rate_kobo_per_hour,
+                fixed_rate_kobo: r.fixed_rate_kobo,
+                stat_bonus_kobo: r.stat_bonus_kobo,
+                distance_km: r.distance_km,
+                interest_expressed: r.interest_expressed,
             })
-            .collect(); // Urgency rank: STAT > Urgent > Normal > Scheduled.
-        fn urgency_rank(p: &ShiftPriority) -> u8 {
-            match p {
-                ShiftPriority::Stat => 0,
-                ShiftPriority::Urgent => 1,
-                ShiftPriority::Normal => 2,
-                ShiftPriority::Scheduled => 3,
-            }
-        }
-
-        cards.sort_by(|a, b| {
-            urgency_rank(&a.priority)
-                .cmp(&urgency_rank(&b.priority))
-                .then_with(|| match (a.distance_km, b.distance_km) {
-                    (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(std::cmp::Ordering::Equal),
-                    (Some(_), None) => std::cmp::Ordering::Less,
-                    (None, Some(_)) => std::cmp::Ordering::Greater,
-                    (None, None) => std::cmp::Ordering::Equal,
-                })
-                .then_with(|| a.scheduled_start.cmp(&b.scheduled_start))
-        });
+            .collect();
 
         Ok(cards)
     }
