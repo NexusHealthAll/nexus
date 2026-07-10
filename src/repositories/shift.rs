@@ -239,13 +239,17 @@ impl ShiftRepository {
 
     /// Accept an offer inside a transaction
 
+    /// Accept an offer inside a transaction. The `status = 'offered'` guard plus
+    /// the row lock the UPDATE takes serialize concurrent accepts: only the
+    /// first transaction flips the row, so callers must treat a `0` return
+    /// (no rows updated) as "already responded to" and abort.
     pub async fn accept_offer_tx(
         &self,
         tx: &mut Transaction<'_, Postgres>,
         assignment_id: Uuid,
         ndpr_consent: &serde_json::Value,
-    ) -> Result<(), sqlx::Error> {
-        sqlx::query(
+    ) -> Result<u64, sqlx::Error> {
+        let result = sqlx::query(
             r#"
             UPDATE shift_assignments
                SET status        = 'accepted',
@@ -258,7 +262,28 @@ impl ShiftRepository {
         .bind(ndpr_consent)
         .execute(&mut **tx)
         .await?;
-        Ok(())
+        Ok(result.rows_affected())
+    }
+
+    /// Whether this clinician has already declined an offer for this shift
+    /// (SCRUM-14 / US-06 AC-04 — cannot re-offer a decliner).
+    pub async fn has_declined_offer(
+        &self,
+        shift_id: Uuid,
+        clinician_id: Uuid,
+    ) -> Result<bool, sqlx::Error> {
+        sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS(
+                SELECT 1 FROM shift_assignments
+                WHERE shift_id = $1 AND clinician_id = $2 AND status = 'declined'
+            )
+            "#,
+        )
+        .bind(shift_id)
+        .bind(clinician_id)
+        .fetch_one(&self.pool)
+        .await
     }
 
     /// Cancel sibling offers when one is accepted. Marks every

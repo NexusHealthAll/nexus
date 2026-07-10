@@ -121,6 +121,12 @@ pub enum ShiftServiceError {
 
     #[error("Shift is no longer available")]
     ShiftUnavailable,
+
+    #[error("Worker already declined this shift")]
+    WorkerAlreadyDeclined,
+
+    #[error("This offer has already been responded to")]
+    OfferAlreadyResponded,
 }
 
 /// A worker's origin for nearby-shift discovery: live GPS supplied on the
@@ -795,6 +801,15 @@ impl ShiftService {
             return Err(ShiftServiceError::NotInterested);
         }
 
+        // US-06 AC-04: a worker who already declined cannot be re-offered.
+        if self
+            .shift_repo
+            .has_declined_offer(shift_id, clinician_id)
+            .await?
+        {
+            return Err(ShiftServiceError::WorkerAlreadyDeclined);
+        }
+
         let expires_at = Utc::now() + Duration::minutes(30);
         let assignment_id = match self
             .shift_repo
@@ -902,9 +917,16 @@ impl ShiftService {
         })?;
 
         let mut tx = self.pool.begin().await?;
-        self.shift_repo
+        // The guarded UPDATE serializes concurrent accepts of the same offer
+        // (US-11 UT020): if it flips no rows, another accept already won — abort
+        // so we don't double-assign. Dropping `tx` rolls back.
+        let updated = self
+            .shift_repo
             .accept_offer_tx(&mut tx, assignment_id, &consent_json)
             .await?;
+        if updated == 0 {
+            return Err(ShiftServiceError::OfferAlreadyResponded);
+        }
         self.shift_repo
             .cancel_sibling_offers_tx(&mut tx, shift_id, assignment_id)
             .await?;
