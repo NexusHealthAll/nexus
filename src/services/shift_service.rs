@@ -123,6 +123,7 @@ pub struct ShiftService {
     notification_service: Arc<NotificationService>,
     email_outbox: Arc<EmailOutboxService>,
     wallet_service: Arc<crate::services::wallet_service::WalletService>,
+    push: Arc<crate::services::push_service::PushService>,
 }
 
 impl ShiftService {
@@ -132,6 +133,7 @@ impl ShiftService {
         notification_service: Arc<NotificationService>,
         email_outbox: Arc<EmailOutboxService>,
         wallet_service: Arc<crate::services::wallet_service::WalletService>,
+        push: Arc<crate::services::push_service::PushService>,
     ) -> Self {
         Self {
             shift_repo,
@@ -139,6 +141,7 @@ impl ShiftService {
             notification_service,
             email_outbox,
             wallet_service,
+            push,
         }
     }
 
@@ -692,6 +695,21 @@ impl ShiftService {
             }
         }
 
+        // Push the offer to the clinician's devices (US-06 AC-01 / US-11 AC-01).
+        if let Ok(Some(clinician_user_id)) =
+            self.shift_repo.get_clinician_user_id(clinician_id).await
+        {
+            self.push
+                .notify_best_effort(
+                    clinician_user_id,
+                    "shift_offered",
+                    "New shift offer",
+                    &format!("You have a shift offer for {}", shift.role_title),
+                    serde_json::json!({ "shift_id": shift_id, "expires_at": expires_at }),
+                )
+                .await;
+        }
+
         Ok((assignment_id, expires_at))
     }
 
@@ -816,6 +834,18 @@ impl ShiftService {
                 .await;
         }
 
+        // Push the assignment confirmation to the hospital admin who created
+        // the shift (US-06 AC-06 / US-11 AC-10).
+        self.push
+            .notify_best_effort(
+                shift.created_by,
+                "shift_accepted",
+                "Shift assigned",
+                &format!("Your shift \"{}\" was accepted", shift.role_title),
+                serde_json::json!({ "shift_id": shift_id }),
+            )
+            .await;
+
         Ok(assignment_id)
     }
 
@@ -869,6 +899,17 @@ impl ShiftService {
                     .enqueue_email(&hospital_email, &content)
                     .await;
             }
+
+            // Push the decline to the hospital admin (US-11 AC-12).
+            self.push
+                .notify_best_effort(
+                    shift.created_by,
+                    "shift_declined",
+                    "Offer declined",
+                    &format!("A worker declined your shift \"{}\"", shift.role_title),
+                    serde_json::json!({ "shift_id": shift_id }),
+                )
+                .await;
         }
 
         Ok(())

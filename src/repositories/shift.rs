@@ -149,6 +149,18 @@ impl ShiftRepository {
         .await
     }
 
+    /// Resolve `users.id` from a `clinicians.id` — used to target push
+    /// notifications at the clinician behind a shift assignment.
+    pub async fn get_clinician_user_id(
+        &self,
+        clinician_id: Uuid,
+    ) -> Result<Option<Uuid>, sqlx::Error> {
+        sqlx::query_scalar::<_, Uuid>(r#"SELECT user_id FROM clinicians WHERE id = $1"#)
+            .bind(clinician_id)
+            .fetch_optional(&self.pool)
+            .await
+    }
+
     /// Get the hospital's first registered location coordinates
 
     pub async fn get_hospital_coordinates(
