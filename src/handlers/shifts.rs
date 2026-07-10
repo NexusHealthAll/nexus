@@ -251,12 +251,12 @@ pub async fn get_shift(
     responses(
         (status = 201, description = "Interest recorded"),
         (status = 404, description = "Shift not found", body = ErrorResponse),
-        (status = 409, description = "Interest already exists", body = ErrorResponse),
+        (status = 409, description = "Interest already exists, or shift is no longer available", body = ErrorResponse),
         (status = 422, description = "Validation error", body = ErrorResponse)
     ),
     tag = "shifts",
     summary = "Express interest in a shift",
-    description = "Clinician expresses interest in an open shift"
+    description = "Clinician expresses interest in an open shift. The hospital admin is notified. Rejected with 409 if the shift is no longer open (BR: no longer available)."
 )]
 pub async fn express_interest(
     State(state): State<AppState>,
@@ -1416,6 +1416,9 @@ fn map_shift_error(e: ShiftServiceError) -> AppError {
             "Location required. Share your location or enable GPS to see nearby shifts."
                 .to_string(),
         ),
+        ShiftServiceError::ShiftUnavailable => {
+            AppError::Conflict("Shift is no longer available".to_string())
+        }
     }
 }
 
