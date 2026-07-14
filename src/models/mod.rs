@@ -9,6 +9,7 @@ pub mod email_outbox;
 pub mod here_maps;
 pub mod hospital;
 pub mod location;
+pub mod notification;
 pub mod registration;
 pub mod shift;
 pub mod user;
