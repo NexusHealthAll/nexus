@@ -412,7 +412,7 @@ pub async fn list_interested_for_shift(
         (status = 401, description = "Missing or invalid token", body = ErrorResponse),
         (status = 403, description = "Not the shift creator", body = ErrorResponse),
         (status = 404, description = "Shift not found", body = ErrorResponse),
-        (status = 409, description = "Clinician did not express interest, shift not open, or already offered", body = ErrorResponse)
+        (status = 409, description = "Clinician did not express interest, shift not open, already offered, or worker already declined this shift", body = ErrorResponse)
     ),
     tag = "shifts",
     summary = "Send a shift offer to an interested clinician",
@@ -458,7 +458,7 @@ pub async fn offer_shift(
         (status = 401, description = "Missing or invalid token", body = ErrorResponse),
         (status = 403, description = "Caller has no clinician profile", body = ErrorResponse),
         (status = 404, description = "No pending offer for this shift", body = ErrorResponse),
-        (status = 409, description = "Offer expired, clinician busy, or schedule conflict", body = ErrorResponse),
+        (status = 409, description = "Offer expired, already responded to, clinician busy, or schedule conflict", body = ErrorResponse),
         (status = 422, description = "NDPR consent missing", body = ErrorResponse)
     ),
     tag = "shifts",
@@ -1418,6 +1418,12 @@ fn map_shift_error(e: ShiftServiceError) -> AppError {
         ),
         ShiftServiceError::ShiftUnavailable => {
             AppError::Conflict("Shift is no longer available".to_string())
+        }
+        ShiftServiceError::WorkerAlreadyDeclined => {
+            AppError::Conflict("Worker already declined this shift".to_string())
+        }
+        ShiftServiceError::OfferAlreadyResponded => {
+            AppError::Conflict("This offer has already been responded to".to_string())
         }
     }
 }
