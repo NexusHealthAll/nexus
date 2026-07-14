@@ -14,6 +14,7 @@ use crate::{
         EditRatingRequest, HandoverResponse, HandoverRevisionRequest, MyApplicationEntry,
         NearbyShiftCard, RankedInterestedClinician, RateHospitalRequest, RateWorkerRequest,
         RatingResponse, Shift, ShiftApplication, ShiftApplicationRequest, ShiftApplicationsQuery,
+        ShiftDetailResponse,
         ShiftAssignRequest, ShiftCancelRequest, ShiftInterestRequest, ShiftListQuery,
         ShiftOfferRequest, ShiftOfferResponse, ShiftRescheduleRequest, SubmitHandoverRequest,
     },
@@ -210,20 +211,31 @@ pub async fn preview_shift(
         ("shift_id" = Uuid, Path, description = "Shift unique identifier")
     ),
     responses(
-        (status = 200, description = "Shift details retrieved successfully", body = Shift),
+        (status = 200, description = "Enriched shift details retrieved successfully", body = ShiftDetailResponse),
         (status = 404, description = "Shift not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
     ),
     tag = "shifts",
     summary = "Get shift details",
-    description = "Retrieve detailed information about a specific shift by its ID."
+    description = "Retrieve the full shift-detail view: base shift fields plus tasks, requirements, hospital rating, and — for in-person shifts — the hospital location. When the caller is a clinician, each requirement is matched against their qualifications."
 )]
 pub async fn get_shift(
     State(state): State<AppState>,
     Path(shift_id): Path<Uuid>,
-) -> AppResult<Json<Shift>> {
-    match state.shift_service.get_shift(shift_id).await {
-        Ok(shift) => Ok(Json(shift)),
+    headers: HeaderMap,
+) -> AppResult<Json<crate::models::shift::ShiftDetailResponse>> {
+    // Best-effort identity: a clinician viewer gets qualification matching;
+    // anyone else (or an unauthenticated caller) gets the shift without it.
+    let requester_user_id = extract_claims(&headers)
+        .ok()
+        .and_then(|claims| Uuid::parse_str(&claims.sub).ok());
+
+    match state
+        .shift_service
+        .get_shift_detail(shift_id, requester_user_id)
+        .await
+    {
+        Ok(detail) => Ok(Json(detail)),
         Err(e) => Err(map_shift_error(e)),
     }
 }

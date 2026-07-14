@@ -129,6 +129,27 @@ pub struct WorkerOrigin {
     pub accuracy_meters: Option<f32>,
 }
 
+/// Pair each shift requirement with whether it is satisfied by the clinician's
+/// qualifications (SCRUM-25 / US-09 AC-04). Matching is case-insensitive and
+/// whitespace-trimmed so "ACLS Certified" matches "acls certified".
+fn match_qualifications(
+    requirements: &[String],
+    quals: &[String],
+) -> Vec<crate::models::shift::QualificationMatch> {
+    use std::collections::HashSet;
+    let held: HashSet<String> = quals
+        .iter()
+        .map(|q| q.trim().to_lowercase())
+        .collect();
+    requirements
+        .iter()
+        .map(|req| crate::models::shift::QualificationMatch {
+            requirement: req.clone(),
+            met: held.contains(&req.trim().to_lowercase()),
+        })
+        .collect()
+}
+
 pub struct ShiftService {
     shift_repo: Arc<ShiftRepository>,
     pool: PgPool,
@@ -303,6 +324,75 @@ impl ShiftService {
             .get_by_id(shift_id)
             .await?
             .ok_or(ShiftServiceError::NotFound(shift_id))
+    }
+
+    /// Enriched shift detail for the "View Shift Details" screen (SCRUM-25 /
+    /// US-09): base shift plus tasks, requirements, hospital rating, and — for
+    /// in-person shifts — the hospital location. When `requester_user_id` is a
+    /// clinician, each requirement is matched against their qualifications.
+    pub async fn get_shift_detail(
+        &self,
+        shift_id: Uuid,
+        requester_user_id: Option<Uuid>,
+    ) -> Result<crate::models::shift::ShiftDetailResponse, ShiftServiceError> {
+        use crate::models::shift::{
+            HospitalLocation, HospitalRatingSummary, ShiftDetailResponse, ShiftType,
+        };
+
+        let shift = self
+            .shift_repo
+            .get_by_id(shift_id)
+            .await?
+            .ok_or(ShiftServiceError::NotFound(shift_id))?;
+
+        let tasks = self.shift_repo.list_shift_tasks(shift_id).await?;
+        let requirements = self.shift_repo.list_shift_requirements(shift_id).await?;
+
+        let (average, count) = self
+            .shift_repo
+            .hospital_rating_summary(shift.hospital_id)
+            .await?;
+        let hospital_rating = HospitalRatingSummary {
+            average: average.unwrap_or(0.0),
+            count,
+        };
+
+        // Map coordinates only make sense for in-person shifts (AC-06).
+        let hospital_location = match shift.shift_type {
+            ShiftType::InPerson => self
+                .shift_repo
+                .get_hospital_coordinates(shift.hospital_id)
+                .await?
+                .map(|(latitude, longitude)| HospitalLocation {
+                    latitude,
+                    longitude,
+                }),
+            ShiftType::Virtual => None,
+        };
+
+        // Qualification match is only meaningful for a clinician viewer (AC-04).
+        let qualification_match = match requester_user_id {
+            Some(user_id) => match self.shift_repo.find_clinician_id_for_user(user_id).await? {
+                Some(clinician_id) => {
+                    let quals = self
+                        .shift_repo
+                        .list_clinician_qualifications(clinician_id)
+                        .await?;
+                    match_qualifications(&requirements, &quals)
+                }
+                None => Vec::new(),
+            },
+            None => Vec::new(),
+        };
+
+        Ok(ShiftDetailResponse {
+            shift,
+            tasks,
+            requirements,
+            qualification_match,
+            hospital_rating,
+            hospital_location,
+        })
     }
 
     pub async fn list_shifts(
@@ -2493,4 +2583,49 @@ pub struct ShiftPreview {
     pub grand_total_kobo: i64,
     pub virtual_link: Option<String>,
     pub estimated_matches: i32,
+}
+
+#[cfg(test)]
+mod qualification_match_tests {
+    //! SCRUM-25 / US-09 AC-04 (UT009) — requirement/qualification matching.
+    use super::match_qualifications;
+
+    fn v(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// UT009 — met requirements are flagged true, missing ones false.
+    #[test]
+    fn ut009_matches_and_misses() {
+        let reqs = v(&["ACLS Certified", "2+ years experience", "Valid license"]);
+        let quals = v(&["acls certified", "valid license"]);
+        let result = match_qualifications(&reqs, &quals);
+
+        assert_eq!(result.len(), 3);
+        assert!(result[0].met, "case-insensitive match expected");
+        assert!(!result[1].met, "missing qualification should be false");
+        assert!(result[2].met);
+        // Original requirement text is preserved for display.
+        assert_eq!(result[0].requirement, "ACLS Certified");
+    }
+
+    /// Whitespace around tags is ignored when matching.
+    #[test]
+    fn trims_whitespace() {
+        let result = match_qualifications(&v(&["  BLS  "]), &v(&["bls"]));
+        assert!(result[0].met);
+    }
+
+    /// No requirements yields an empty match set (UT020 empty state).
+    #[test]
+    fn empty_requirements_yield_empty() {
+        assert!(match_qualifications(&[], &v(&["anything"])).is_empty());
+    }
+
+    /// A clinician with no qualifications meets nothing.
+    #[test]
+    fn no_quals_meets_nothing() {
+        let result = match_qualifications(&v(&["X", "Y"]), &[]);
+        assert!(result.iter().all(|m| !m.met));
+    }
 }
