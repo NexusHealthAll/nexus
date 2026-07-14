@@ -118,6 +118,9 @@ pub enum ShiftServiceError {
 
     #[error("Worker location required to list nearby shifts")]
     LocationRequired,
+
+    #[error("Shift is no longer available")]
+    ShiftUnavailable,
 }
 
 /// A worker's origin for nearby-shift discovery: live GPS supplied on the
@@ -429,19 +432,46 @@ impl ShiftService {
             .await?
             .ok_or(ShiftServiceError::NotFound(shift_id))?;
 
-        let is_waitlisted = shift.assigned_clinician_id.is_some();
-        let result = self
+        // US-10 AC-04: interest is only accepted while the shift is open. Once
+        // it has been assigned (or otherwise moved on) it is no longer available.
+        if shift.status != ShiftStatus::Open {
+            return Err(ShiftServiceError::ShiftUnavailable);
+        }
+
+        match self
             .shift_repo
-            .add_interest(shift_id, clinician_id, false, is_waitlisted)
+            .add_interest(shift_id, clinician_id, false, false)
+            .await
+        {
+            Ok(()) => {}
+            Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
+                return Err(ShiftServiceError::DuplicateInterest)
+            }
+            Err(err) => return Err(ShiftServiceError::DatabaseError(err)),
+        }
+
+        // US-10 AC-05: let the hospital admin know a worker is available.
+        let worker_name = self
+            .shift_repo
+            .get_clinician_contact(clinician_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|(first, last, _)| format!("{} {}", first.trim(), last.trim()).trim().to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "A worker".to_string());
+
+        self.push
+            .notify_best_effort(
+                shift.created_by,
+                "interest_expressed",
+                "New interest in your shift",
+                &format!("{worker_name} is interested in \"{}\"", shift.role_title),
+                serde_json::json!({ "shift_id": shift_id, "clinician_id": clinician_id }),
+            )
             .await;
 
-        match result {
-            Ok(()) => Ok(()),
-            Err(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => {
-                Err(ShiftServiceError::DuplicateInterest)
-            }
-            Err(err) => Err(ShiftServiceError::DatabaseError(err)),
-        }
+        Ok(())
     }
 
     pub async fn apply_for_shift(
