@@ -10,6 +10,8 @@ pub mod hospitals;
 pub mod identity;
 pub mod location;
 pub mod notifications;
+pub mod patients;
+pub mod pipeline;
 pub mod registration;
 pub mod shifts;
 pub mod wallet;
