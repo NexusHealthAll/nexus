@@ -21,8 +21,8 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use crate::handlers::{
     admin, auth, clinician_registration, distance, earnings, emails, health, here_maps, hospitals,
-    identity, location, notifications, patients, registration, shifts, uploads, video, wallet,
-    webhooks,
+    identity, location, notifications, patients, pipeline, registration, shifts, uploads, video,
+    wallet, webhooks,
 };
 use crate::models::patient_prediction::PipelineEvent;
 use crate::repositories::{
@@ -68,6 +68,7 @@ pub struct AppState {
     pub patient_repo: Arc<PatientRepository>,
     pub patient_prediction_service: Arc<PatientPredictionService>,
     pub video_service: Arc<VideoService>,
+    pub pipeline_events: Arc<broadcast::Sender<PipelineEvent>>,
 }
 
 #[derive(OpenApi)]
@@ -627,7 +628,7 @@ pub fn create_router(
         patient_repo.clone(),
         patient_prediction_repo.clone(),
         ml_client,
-        patient_event_tx,
+        patient_event_tx.clone(),
     ));
     let patient_prediction_worker =
         PatientPredictionWorker::new(patient_prediction_service.clone());
@@ -652,6 +653,7 @@ pub fn create_router(
         patient_repo: patient_repo.clone(),
         patient_prediction_service,
         video_service,
+        pipeline_events: patient_event_tx,
     };
 
     let api_router = Router::new()
@@ -666,11 +668,6 @@ pub fn create_router(
         // Generic frontend-templated email relay (authenticated).
         .route("/api/v1/emails/send", post(emails::send_email))
         .route("/api/v1/auth/me", get(auth::me))
-        // Patient intake & ML pipeline endpoints
-        .route("/api/v1/ingest/patient", post(patients::ingest_patient))
-        .route("/api/v1/patients", get(patients::list_patients))
-        .route("/api/v1/patients/{id}", get(patients::get_patient))
-        .route("/api/v1/pipeline/events", get(pipeline::pipeline_events))
         // Hospital Registration
         .route(
             "/api/v1/hospitals/register",
@@ -1089,7 +1086,9 @@ pub fn create_router(
         )
         // ---- Patients / ML pipeline — authenticated (claims checked in-handler).
         .route("/api/v1/ingest/patient", post(patients::ingest_patient))
+        .route("/api/v1/patients", get(patients::list_patients))
         .route("/api/v1/patients/{id}", get(patients::get_patient))
+        .route("/api/v1/pipeline/events", get(pipeline::pipeline_events))
         // ---- Webhooks — authenticated by HMAC signature, not JWT.
         .route(
             "/api/v1/webhooks/safehaven",
