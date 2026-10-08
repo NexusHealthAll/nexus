@@ -293,6 +293,8 @@ pub struct ConsultParticipantView {
     /// whose `identity` shares a `u:<uuid>` prefix are one person on two
     /// devices — group on it if you render a person list, not a device list.
     pub device_ordinal: i32,
+    /// Whatever the user called the device when handing off, e.g. "iPhone".
+    /// `null` when they gave no label.
     pub device_label: Option<String>,
 }
 

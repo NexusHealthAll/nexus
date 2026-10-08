@@ -180,7 +180,7 @@ pub async fn end_session(
     ),
     tag = "video",
     summary = "Continue this consultation on another device",
-    description = "Returns a single-use code and the URL to open on the second device. The                    code lives for 3 minutes, is good for one redemption, and carries the                    code in the URL *fragment* so it never reaches a server log — render it                    as a QR code. Both devices stay in the call; the phone joins as a                    companion identity and does not re-trigger clock-in."
+    description = "Returns a single-use code and the URL to open on the second device. The code lives for 3 minutes, is good for one redemption, and carries the code in the URL *fragment* so it never reaches a server log — render it as a QR code. Both devices stay in the call; the phone joins as a companion identity and does not re-trigger clock-in."
 )]
 pub async fn create_handoff(
     State(state): State<AppState>,
@@ -215,7 +215,7 @@ pub async fn create_handoff(
     tag = "video",
     summary = "Redeem a \"Continue on phone\" code for a join token",
     security(),
-    description = "Takes no Authorization header: the single-use code stands in for one.                    Read it from the URL fragment and POST it here. Unknown, expired and                    spent codes all fail identically, so nothing can be probed. The                    response is the same shape as POST /consult/token, so the client reuses                    its generated types."
+    description = "Takes no Authorization header: the single-use code stands in for one. Read it from the URL fragment and POST it here. Unknown, expired and spent codes all fail identically, so nothing can be probed. The response is the same shape as POST /consult/token, so the client reuses its generated types."
 )]
 pub async fn redeem_handoff(
     State(state): State<AppState>,

@@ -30,11 +30,14 @@ pub struct ConsultationNote {
     /// The consultation the note was written in. `ON DELETE SET NULL`: the
     /// clinical record outlives the video session.
     pub session_id: Option<Uuid>,
+    /// The doctor's diagnosis, alongside the existing SOAP fields.
     pub diagnosis: Option<String>,
     /// Free-form, e.g. `{"bp":"120/80","temp_c":37.1}` — deliberately unshaped
     /// so a note is never blocked on a vitals schema the ML model owns.
     pub vitals: serde_json::Value,
+    /// JSON array of what was prescribed. Defaults to `[]`.
     pub medications: serde_json::Value,
+    /// When the patient should be seen again; `null` if no follow-up is due.
     pub follow_up_at: Option<DateTime<Utc>>,
     /// Set when this note amends an earlier, locked one. The original is never
     /// rewritten.
@@ -79,7 +82,9 @@ pub struct UpdateConsultationNoteRequest {
     pub assessment: Option<String>,
     pub plan: Option<String>,
     pub diagnosis: Option<String>,
+    /// Replaces the stored object wholesale; it is not merged field by field.
     pub vitals: Option<serde_json::Value>,
+    /// Replaces the stored array wholesale.
     pub medications: Option<Vec<serde_json::Value>>,
     pub follow_up_at: Option<DateTime<Utc>>,
 }

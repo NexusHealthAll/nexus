@@ -40,6 +40,7 @@ use crate::utils::{
     params(("shift_id" = Uuid, Path, description = "Shift unique identifier")),
     responses(
         (status = 201, description = "Patient queued", body = ConsultWaitingRoomView),
+        (status = 401, description = "Missing or invalid token", body = crate::handlers::shifts::ErrorResponse),
         (status = 403, description = "Not an admin of this shift's hospital", body = crate::handlers::shifts::ErrorResponse),
         (status = 404, description = "Shift or patient not found", body = crate::handlers::shifts::ErrorResponse),
         (status = 409, description = "Already queued, or the consultation has ended", body = crate::handlers::shifts::ErrorResponse),
@@ -86,6 +87,7 @@ pub async fn add_patient_to_queue(
     params(("shift_id" = Uuid, Path, description = "Shift unique identifier")),
     responses(
         (status = 200, description = "The waiting room", body = ConsultWaitingRoomView),
+        (status = 401, description = "Missing or invalid token", body = crate::handlers::shifts::ErrorResponse),
         (status = 403, description = "Not a party to this shift", body = crate::handlers::shifts::ErrorResponse),
         (status = 404, description = "Shift not found, or no consultation started", body = crate::handlers::shifts::ErrorResponse)
     ),
@@ -120,6 +122,7 @@ pub async fn get_waiting_room(
     ),
     responses(
         (status = 200, description = "Patient called in", body = ConsultWaitingRoomView),
+        (status = 401, description = "Missing or invalid token", body = crate::handlers::shifts::ErrorResponse),
         (status = 403, description = "Not the clinician assigned to this shift", body = crate::handlers::shifts::ErrorResponse),
         (status = 404, description = "Queue entry not found on this shift", body = crate::handlers::shifts::ErrorResponse),
         (status = 409, description = "Another patient is already in consultation, or the entry is not waiting", body = crate::handlers::shifts::ErrorResponse)
@@ -161,6 +164,7 @@ pub async fn call_patient(
     ),
     responses(
         (status = 200, description = "Patient released", body = ConsultWaitingRoomView),
+        (status = 401, description = "Missing or invalid token", body = crate::handlers::shifts::ErrorResponse),
         (status = 403, description = "Not the clinician assigned to this shift", body = crate::handlers::shifts::ErrorResponse),
         (status = 404, description = "Queue entry not found on this shift", body = crate::handlers::shifts::ErrorResponse),
         (status = 409, description = "The entry is not in consultation", body = crate::handlers::shifts::ErrorResponse)
@@ -200,6 +204,7 @@ pub async fn mark_patient_seen(
     ),
     responses(
         (status = 200, description = "Patient withdrawn from the queue", body = ConsultWaitingRoomView),
+        (status = 401, description = "Missing or invalid token", body = crate::handlers::shifts::ErrorResponse),
         (status = 403, description = "Not an admin of this shift's hospital", body = crate::handlers::shifts::ErrorResponse),
         (status = 404, description = "Queue entry not found on this shift", body = crate::handlers::shifts::ErrorResponse)
     ),
@@ -239,6 +244,7 @@ pub async fn remove_from_queue(
     ),
     responses(
         (status = 200, description = "This patient's notes for this shift", body = [ConsultationNote]),
+        (status = 401, description = "Missing or invalid token", body = crate::handlers::shifts::ErrorResponse),
         (status = 403, description = "Not a party to this shift", body = crate::handlers::shifts::ErrorResponse),
         (status = 404, description = "Shift or patient not found", body = crate::handlers::shifts::ErrorResponse)
     ),
@@ -274,6 +280,7 @@ pub async fn list_shift_patient_notes(
     ),
     responses(
         (status = 200, description = "Handover note filed", body = PatientHandoverNoteView),
+        (status = 401, description = "Missing or invalid token", body = crate::handlers::shifts::ErrorResponse),
         (status = 403, description = "Not an admin of this shift's hospital", body = crate::handlers::shifts::ErrorResponse),
         (status = 404, description = "Shift or patient not found", body = crate::handlers::shifts::ErrorResponse),
         (status = 409, description = "The edit window has closed", body = crate::handlers::shifts::ErrorResponse),
@@ -322,11 +329,13 @@ pub async fn submit_handover_note(
     ),
     responses(
         (status = 200, description = "The handover note", body = PatientHandoverNoteView),
+        (status = 401, description = "Missing or invalid token", body = crate::handlers::shifts::ErrorResponse),
         (status = 403, description = "Not a party to this shift", body = crate::handlers::shifts::ErrorResponse),
         (status = 404, description = "No handover note filed for this patient", body = crate::handlers::shifts::ErrorResponse)
     ),
     tag = "patient-records",
-    summary = "Read one patient's handover note"
+    summary = "Read one patient's handover note",
+    description = "Readable by the shift's assigned clinician and by admins of the owning hospital, during the shift and permanently after it completes. 404 means no note has been filed for this patient yet, which is an ordinary state rather than an error — the on-site party may simply not have written it."
 )]
 pub async fn get_handover_note(
     State(state): State<AppState>,
@@ -350,6 +359,7 @@ pub async fn get_handover_note(
     params(("shift_id" = Uuid, Path, description = "Shift unique identifier")),
     responses(
         (status = 200, description = "Every patient the shift produced a record for", body = ShiftPatientRecordsView),
+        (status = 401, description = "Missing or invalid token", body = crate::handlers::shifts::ErrorResponse),
         (status = 403, description = "Not a party to this shift", body = crate::handlers::shifts::ErrorResponse),
         (status = 404, description = "Shift not found", body = crate::handlers::shifts::ErrorResponse)
     ),
