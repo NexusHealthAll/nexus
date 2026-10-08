@@ -955,28 +955,73 @@ async fn an_escalation_needs_a_reason() {
     );
 }
 
+/// The on-site party may file the per-patient handover note, and on an in-person
+/// shift that party is the assigned clinician. Restricting this to HospitalAdmin
+/// left nobody able to file one there, and contradicted the shift-level handover,
+/// which is HealthWorker-authored.
 #[tokio::test]
-async fn a_worker_cannot_file_the_handover_note() {
+async fn the_assigned_clinician_can_file_the_handover_note() {
     let Some(pool) = test_pool().await else { return };
     let s = stack(&pool);
     let fixture = seed_fixture(&pool).await;
-    let patient = seed_patient(&pool, fixture.hospital_id, fixture.admin_user_id, "Wrong Author").await;
+    let patient = seed_patient(&pool, fixture.hospital_id, fixture.admin_user_id, "Worker Authored").await;
 
-    // The per-patient handover note is the on-site hospital party's document.
-    let result = s
+    let note = s
         .records
         .submit_handover_note(
             fixture.shift_id,
             patient,
             &fixture.worker_claims(),
             SubmitPatientHandoverNoteRequest {
-                summary: "Not my document".to_string(),
+                summary: "Reviewed at the bedside".to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("the assigned clinician files the handover note");
+
+    assert_eq!(note.patient_id, patient);
+    // Authorship is taken from the token, never the body.
+    assert_eq!(note.author_user_id, fixture.worker_user_id);
+
+    // And the hospital still reads it — this is the record they keep.
+    let read = s
+        .records
+        .get_handover_note(fixture.shift_id, patient, &fixture.admin_claims())
+        .await
+        .expect("the hospital reads the clinician's note");
+    assert_eq!(read.summary, "Reviewed at the bedside");
+}
+
+/// Widening authorship to the clinician must not widen it to *any* clinician:
+/// `ShiftDataRole::Clinician` is only ever the assigned one.
+#[tokio::test]
+async fn an_unassigned_worker_cannot_file_the_handover_note() {
+    let Some(pool) = test_pool().await else { return };
+    let s = stack(&pool);
+    let fixture = seed_fixture(&pool).await;
+    let patient = seed_patient(&pool, fixture.hospital_id, fixture.admin_user_id, "Wrong Author").await;
+
+    let other_user = seed_user(&pool, "health_worker", None).await;
+    seed_clinician(&pool, other_user).await;
+
+    let result = s
+        .records
+        .submit_handover_note(
+            fixture.shift_id,
+            patient,
+            &claims(other_user, UserRole::HealthWorker, None),
+            SubmitPatientHandoverNoteRequest {
+                summary: "Not my shift".to_string(),
                 ..Default::default()
             },
         )
         .await;
+    // Refused upstream by authorize_shift_data_access: a health worker who does
+    // not hold the assignment is not a party to this shift at all, which is a
+    // stronger statement than "wrong hospital".
     assert!(
-        matches!(result, Err(PatientRecordServiceError::NotTheOwningHospital)),
+        matches!(result, Err(PatientRecordServiceError::NotAuthorized)),
         "got {result:?}"
     );
 }

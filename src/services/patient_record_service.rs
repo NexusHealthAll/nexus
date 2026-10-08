@@ -436,9 +436,23 @@ impl PatientRecordService {
         request: SubmitPatientHandoverNoteRequest,
     ) -> Result<PatientHandoverNote> {
         let (shift, role) = self.shift_and_role(shift_id, claims).await?;
-        // The on-site party is the hospital's own admin in the consult room.
-        if role != ShiftDataRole::HospitalAdmin {
-            return Err(PatientRecordServiceError::NotTheOwningHospital);
+        // Whoever is on site for this patient may file their handover note:
+        // the hospital's own admin in the consult room, or the assigned
+        // clinician — who *is* the on-site party on an in-person shift, and who
+        // already authors the shift-level handover (`POST /shifts/{id}/handover`
+        // is HealthWorker-gated). Restricting this to HospitalAdmin would have
+        // left an in-person shift with nobody able to file one.
+        //
+        // `ShiftDataRole::Clinician` is only ever returned for the *assigned*
+        // clinician — `authorize_shift_data_access` rejects every other health
+        // worker before this point — so this does not widen the tenant boundary.
+        match role {
+            ShiftDataRole::HospitalAdmin | ShiftDataRole::Clinician(_) => {}
+            // NDPR gives platform staff no lawful basis to author clinical
+            // content, only to read counts and metadata.
+            ShiftDataRole::PlatformAdmin => {
+                return Err(PatientRecordServiceError::NotTheOwningHospital)
+            }
         }
 
         if request.escalation_required

@@ -281,17 +281,20 @@ pub async fn list_shift_patient_notes(
     responses(
         (status = 200, description = "Handover note filed", body = PatientHandoverNoteView),
         (status = 401, description = "Missing or invalid token", body = crate::handlers::shifts::ErrorResponse),
-        (status = 403, description = "Not an admin of this shift's hospital", body = crate::handlers::shifts::ErrorResponse),
+        (status = 403, description = "Not a party on site for this shift", body = crate::handlers::shifts::ErrorResponse),
         (status = 404, description = "Shift or patient not found", body = crate::handlers::shifts::ErrorResponse),
         (status = 409, description = "The edit window has closed", body = crate::handlers::shifts::ErrorResponse),
         (status = 422, description = "Validation error", body = crate::handlers::shifts::ErrorResponse)
     ),
     tag = "patient-records",
     summary = "File the on-site party's handover note for one patient",
-    description = "Written by the hospital-side party in the consultation. Idempotent — one \
-                   note per (shift, patient); resubmitting inside the one-hour edit window \
-                   updates it. `escalation_reason` is required when `escalation_required` \
-                   is true."
+    description = "Written by whoever is on site for this patient: an admin of the shift's \
+                   hospital, or the shift's assigned clinician — who is the on-site party on \
+                   an in-person shift. Any other health worker is refused. Authorship is \
+                   taken from the token, never the body. Idempotent — one note per \
+                   (shift, patient); resubmitting inside the one-hour edit window updates it \
+                   rather than inserting a second. `escalation_reason` is required when \
+                   `escalation_required` is true."
 )]
 pub async fn submit_handover_note(
     State(state): State<AppState>,
