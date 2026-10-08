@@ -1,6 +1,6 @@
 use axum::{
     middleware::from_fn,
-    routing::{delete, get, patch, post},
+    routing::{delete, get, patch, post, put},
     Router,
 };
 
@@ -21,8 +21,8 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use crate::handlers::{
     admin, auth, clinician_registration, consultation_notes, distance, earnings, emails, health,
-    here_maps, hospitals, identity, location, notifications, patients, pipeline, registration,
-    shifts, uploads, video, wallet, webhooks,
+    here_maps, hospitals, identity, location, notifications, patient_records, patients, pipeline,
+    registration, shifts, uploads, video, wallet, webhooks,
 };
 use crate::repositories::{
     admin::AdminRepository, audit::AuditRepository, billing::BillingRepository,
@@ -30,7 +30,8 @@ use crate::repositories::{
     hospital::HospitalRepository, identity_verification::IdentityVerificationRepository,
     location::LocationRepository, notification::NotificationRepository,
     patient::PatientRepository, patient_prediction::PatientPredictionRepository,
-    shift::ShiftRepository, video_session::VideoSessionRepository, wallet::WalletRepository,
+    patient_record::PatientRecordRepository, shift::ShiftRepository,
+    video_session::VideoSessionRepository, wallet::WalletRepository,
 };
 use crate::services::{
     admin_service::AdminService, audit_service::AuditService, auth_service::AuthService,
@@ -42,6 +43,7 @@ use crate::services::{
     livekit::LiveKitClient, location_service::LocationService, ml_client::MlClient,
     notification_service::NotificationService,
     patient_prediction_service::PatientPredictionService,
+    patient_record_service::PatientRecordService,
     payout_service::PayoutService, push_service::PushService,
     registration_service::RegistrationService, safehaven::SafeHavenClient,
     shift_service::ShiftService, video_service::VideoService, wallet_service::WalletService,
@@ -68,6 +70,8 @@ pub struct AppState {
     pub patient_prediction_service: Arc<PatientPredictionService>,
     pub pipeline_events: Arc<tokio::sync::broadcast::Sender<crate::models::patient_prediction::PipelineEvent>>,
     pub consultation_note_service: Arc<ConsultationNoteService>,
+    pub patient_record_repo: Arc<PatientRecordRepository>,
+    pub patient_record_service: Arc<PatientRecordService>,
     pub video_service: Arc<VideoService>,
 }
 
@@ -189,6 +193,18 @@ pub struct AppState {
         crate::handlers::patients::list_patients,
         crate::handlers::pipeline::pipeline_events,
         // Voice-recorded consultation notes
+        // Patient records, waiting room, "Continue on phone"
+        crate::handlers::patient_records::add_patient_to_queue,
+        crate::handlers::patient_records::get_waiting_room,
+        crate::handlers::patient_records::call_patient,
+        crate::handlers::patient_records::mark_patient_seen,
+        crate::handlers::patient_records::remove_from_queue,
+        crate::handlers::patient_records::list_shift_patient_notes,
+        crate::handlers::patient_records::submit_handover_note,
+        crate::handlers::patient_records::get_handover_note,
+        crate::handlers::patient_records::shift_patient_records,
+        crate::handlers::video::create_handoff,
+        crate::handlers::video::redeem_handoff,
         crate::handlers::consultation_notes::start_note,
         crate::handlers::consultation_notes::list_for_patient,
         crate::handlers::consultation_notes::get_note,
@@ -298,6 +314,19 @@ pub struct AppState {
             crate::handlers::patients::ErrorResponse,
             crate::handlers::patients::ErrorDetail,
             // Voice-recorded consultation notes
+            // Patient records, waiting room, "Continue on phone"
+            crate::models::patient_record::QueueEntryState,
+            crate::models::patient_record::AddPatientToQueueRequest,
+            crate::models::patient_record::SubmitPatientHandoverNoteRequest,
+            crate::models::patient_record::CreateHandoffRequest,
+            crate::models::patient_record::RedeemHandoffRequest,
+            crate::models::patient_record::ConsultQueuePatientView,
+            crate::models::patient_record::ConsultWaitingRoomView,
+            crate::models::patient_record::PatientHandoverNoteView,
+            crate::models::patient_record::PatientRecordView,
+            crate::models::patient_record::ShiftPatientRecordsView,
+            crate::models::patient_record::CreateHandoffResponse,
+            crate::models::consultation_note::StartConsultationNoteRequest,
             crate::models::consultation_note::ConsultationNote,
             crate::models::consultation_note::ConsultationTranscriptSegment,
             crate::models::consultation_note::ConsultationNoteDetail,
@@ -481,6 +510,8 @@ pub struct AppState {
         (name = "admin", description = "Admin-only endpoints"),
         (name = "wallet", description = "Hospital wallet — balance, deposits, ledger (Tier 2)"),
         (name = "video", description = "Virtual consultations — LiveKit rooms, join tokens, and session state"),
+        (name = "patient-records", description = "Patient clinical records, per-patient handover notes, and the consultation waiting room"),
+        (name = "consultation-notes", description = "Voice-recorded consultation notes and their transcripts"),
         (name = "webhooks", description = "Inbound webhooks from external providers (SafeHaven, LiveKit)"),
         (name = "earnings", description = "Worker earnings — totals + transaction history"),
         (name = "identity", description = "BVN/NIN identity verification and bank list"),
@@ -628,8 +659,13 @@ pub fn create_router(
         tracing::warn!("LiveKit running in MOCK mode — join tokens are fake");
     }
     let video_repo = Arc::new(VideoSessionRepository::new(pool.clone()));
+    // Built before VideoService: the waiting-room counts ride along on
+    // GET /consult, so VideoService reads this repo (and nothing mutates the
+    // queue through it — that is PatientRecordService's job).
+    let patient_record_repo = Arc::new(PatientRecordRepository::new(pool.clone()));
     let video_service = Arc::new(VideoService::new(
-        video_repo,
+        video_repo.clone(),
+        patient_record_repo.clone(),
         shift_repo.clone(),
         shift_service.clone(),
         livekit_client,
@@ -657,9 +693,27 @@ pub fn create_router(
     // ml-service's Whisper endpoint (same ml_client as the prediction
     // pipeline above, so mock mode covers both in tests).
     let consultation_note_repo = Arc::new(ConsultationNoteRepository::new(pool.clone()));
+    // Takes VideoService for the one shift tenant boundary, and PatientRepository
+    // so a note can never be attached to another hospital's patient.
     let consultation_note_service = Arc::new(ConsultationNoteService::new(
         consultation_note_repo,
+        patient_repo.clone(),
+        video_service.clone(),
         ml_client,
+    ));
+
+    // Patient records: the waiting room, per-patient handover notes, and the
+    // hospital's per-shift roll-up. Depends on VideoService (authorization) and
+    // ConsultationNoteService (clinical notes) and never the reverse, so there
+    // is no Arc cycle.
+    let patient_record_service = Arc::new(PatientRecordService::new(
+        patient_record_repo.clone(),
+        video_repo.clone(),
+        video_service.clone(),
+        consultation_note_service.clone(),
+        patient_repo.clone(),
+        patient_prediction_service.clone(),
+        pool.clone(),
     ));
 
     let state = AppState {
@@ -682,6 +736,8 @@ pub fn create_router(
         patient_prediction_service,
         pipeline_events,
         consultation_note_service,
+        patient_record_repo,
+        patient_record_service,
         video_service,
     };
 
@@ -1128,6 +1184,14 @@ pub fn create_router(
         )
         // Authenticated by LiveKit's own signed JWT, not ours.
         .route("/api/v1/webhooks/livekit", post(webhooks::livekit_webhook))
+        // ---- "Continue on phone" redeem — DELIBERATELY UNGATED.
+        // The single-use, 3-minute, SHA-256-hashed code in the body *is* the
+        // credential: the second device has no JWT yet, which is the whole
+        // point. Adding a require_role layer here breaks the feature.
+        .route(
+            "/api/v1/consult/handoff/redeem",
+            post(video::redeem_handoff),
+        )
         // ---- Worker earnings — HealthWorker only.
         .route(
             "/api/v1/worker/earnings",
@@ -1175,6 +1239,69 @@ pub fn create_router(
         .route(
             "/api/v1/notifications/{notification_id}/read",
             post(notifications::mark_notification_read),
+        )
+        // ---- Patient records & the consult waiting room. The role guard is
+        // coarse on purpose: PatientRecordService does the fine-grained check
+        // against shifts.assigned_clinician_id / claims.hospital_id, which is
+        // the only place that knows which hospital owns a shift.
+        .route(
+            "/api/v1/shifts/{shift_id}/consult/queue",
+            post(patient_records::add_patient_to_queue)
+                .get(patient_records::get_waiting_room)
+                .route_layer(from_fn(require_role(&[
+                    UserRole::HealthWorker,
+                    UserRole::HospitalAdmin,
+                ]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/consult/queue/{entry_id}/call",
+            post(patient_records::call_patient)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/consult/queue/{entry_id}/seen",
+            post(patient_records::mark_patient_seen)
+                .route_layer(from_fn(require_role(&[UserRole::HealthWorker]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/consult/queue/{entry_id}",
+            delete(patient_records::remove_from_queue)
+                .route_layer(from_fn(require_role(&[UserRole::HospitalAdmin]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/patients/{patient_id}/consultation-notes",
+            get(patient_records::list_shift_patient_notes).route_layer(from_fn(require_role(&[
+                UserRole::HealthWorker,
+                UserRole::HospitalAdmin,
+            ]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/patients/{patient_id}/handover-note",
+            put(patient_records::submit_handover_note)
+                .get(patient_records::get_handover_note)
+                .route_layer(from_fn(require_role(&[
+                    UserRole::HealthWorker,
+                    UserRole::HospitalAdmin,
+                ]))),
+        )
+        .route(
+            "/api/v1/shifts/{shift_id}/patient-records",
+            get(patient_records::shift_patient_records).route_layer(from_fn(require_role(&[
+                UserRole::HealthWorker,
+                UserRole::HospitalAdmin,
+                UserRole::SuperAdmin,
+                UserRole::OperationsAdmin,
+            ]))),
+        )
+        // ---- "Continue on phone". The issue side is an ordinary authenticated
+        // consult call; the redeem side is registered with the webhooks below,
+        // because the single-use code stands in for the JWT.
+        .route(
+            "/api/v1/shifts/{shift_id}/consult/handoff",
+            post(video::create_handoff).route_layer(from_fn(require_role(&[
+                UserRole::HealthWorker,
+                UserRole::HospitalAdmin,
+            ]))),
         )
         // ---- Voice-recorded consultation notes — HealthWorker and HospitalAdmin.
         .route(

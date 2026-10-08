@@ -22,7 +22,11 @@ use crate::models::video_session::{JoinMode, ParticipantRole};
 /// validates the token at `connect()` only, so a short TTL never drops a live
 /// call.
 const DEFAULT_TOKEN_TTL_SECONDS: u64 = 900;
-const DEFAULT_MAX_PARTICIPANTS: u32 = 4;
+// 6, not 4: two people with one companion device each ("Continue on phone") is
+// exactly 4, which left no headroom. Raising it only affects rooms created from
+// now on — LiveKit's create_room on an EXISTING room returns it without
+// re-applying options, so a live room's cap cannot be widened.
+const DEFAULT_MAX_PARTICIPANTS: u32 = 6;
 const DEFAULT_EMPTY_TIMEOUT_SECONDS: u32 = 900;
 const DEFAULT_DEPARTURE_TIMEOUT_SECONDS: u32 = 120;
 const ROOM_API_TIMEOUT: Duration = Duration::from_secs(10);
