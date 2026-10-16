@@ -14,8 +14,8 @@
   },
   "servers": [
     {
-      "url": "https://nexus-j2rp.onrender.com",
-      "description": "Production (Render)"
+      "url": "/",
+      "description": "This server"
     },
     {
       "url": "http://localhost:8080",

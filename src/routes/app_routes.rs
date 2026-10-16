@@ -15,6 +15,7 @@ use tower_http::{
 };
 use utoipa::{
     openapi::security::{HttpAuthScheme, HttpBuilder, SecurityRequirement, SecurityScheme},
+    openapi::ServerBuilder,
     Modify, OpenApi,
 };
 use utoipa_swagger_ui::SwaggerUi;
@@ -537,10 +538,6 @@ pub struct AppState {
         description = "Hospital management, ML pipeline, real-time SSE events",
         contact(name = "NexusCare Support", email = "support@nexuscare.com")
     ),
-    servers(
-        (url = "https://nexus-j2rp.onrender.com", description = "Production (Render)"),
-        (url = "http://localhost:8080", description = "Local development")
-    ),
     tags(
         (name = "health", description = "Health check endpoints"),
         (name = "auth", description = "Authentication and authorization endpoints"),
@@ -561,7 +558,7 @@ pub struct AppState {
         (name = "platform", description = "Platform-wide configuration readable by hospitals and workers"),
         (name = "search", description = "Hospital-scoped search across shifts, clinicians, patients and handovers")
     ),
-    modifiers(&SecurityAddon)
+    modifiers(&SecurityAddon, &ServerAddon)
 )]
 pub struct ApiDoc;
 
@@ -598,6 +595,51 @@ impl Modify for SecurityAddon {
 
         // 2. Apply the scheme to every operation by default. Endpoints that
         openapi.security = Some(vec![SecurityRequirement::new("bearerAuth", [""; 0])]);
+    }
+}
+
+/// The `servers` list Swagger UI's "Try it out" fires requests at.
+///
+/// This used to be a hardcoded `servers(...)` attribute naming a Render host.
+/// When that deployment went away every request from `/api/docs` failed with a
+/// network error while the same paths answered fine over curl — the UI was
+/// talking to a dead host, not to the server that served it the document. So the
+/// first entry is relative: Swagger resolves `/` against the origin the docs page
+/// came from, which is right on every host without a per-deployment constant.
+///
+/// `API_BASE_URL` (the same variable `AuthService` builds links from) adds the
+/// absolute URL, which is what a client generated from the dumped spec needs.
+struct ServerAddon;
+
+impl Modify for ServerAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        let mut servers = vec![ServerBuilder::new()
+            .url("/")
+            .description(Some("This server"))
+            .build()];
+
+        let mut push = |url: String, description: &str| {
+            if servers.iter().any(|s| s.url == url) {
+                return;
+            }
+            servers.push(
+                ServerBuilder::new()
+                    .url(url)
+                    .description(Some(description.to_string()))
+                    .build(),
+            );
+        };
+
+        if let Some(base) = std::env::var("API_BASE_URL")
+            .ok()
+            .map(|v| v.trim().trim_end_matches('/').to_string())
+            .filter(|v| !v.is_empty())
+        {
+            push(base, "Deployment (API_BASE_URL)");
+        }
+        push("http://localhost:8080".to_string(), "Local development");
+
+        openapi.servers = Some(servers);
     }
 }
 
@@ -1726,6 +1768,29 @@ mod openapi_tests {
             assert!(
                 item.get(method).is_some(),
                 "{path} is in the spec but has no {method} operation"
+            );
+        }
+    }
+
+    /// The `servers` list used to hardcode a Render host. Once that deployment
+    /// was gone, Swagger UI's "Try it out" fired every request at a name that no
+    /// longer resolved — the docs looked completely broken while the API was
+    /// fine. A relative first entry cannot go stale that way, so assert it stays
+    /// first and that no absolute host sneaks back into the lead.
+    #[test]
+    fn the_first_server_is_relative_to_whoever_serves_the_document() {
+        let spec = spec();
+        let servers = spec["servers"].as_array().expect("servers array");
+        assert_eq!(
+            servers[0]["url"], "/",
+            "the default server must be relative, found {:?}",
+            servers[0]
+        );
+        for server in servers {
+            let url = server["url"].as_str().expect("server url");
+            assert!(
+                !url.contains("onrender.com"),
+                "the dead Render host is back in the spec: {url}"
             );
         }
     }
