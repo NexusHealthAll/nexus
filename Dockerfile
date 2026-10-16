@@ -4,10 +4,15 @@
 FROM rust:1.88-slim-bookworm AS builder
 WORKDIR /app
 
-# openssl-sys (pulled in by lettre's native-tls backend) needs these to build.
+# openssl-sys (pulled in by lettre's native-tls backend) needs pkg-config and
+# libssl-dev to build. utoipa-swagger-ui's build script shells out to curl at
+# compile time to fetch the Swagger UI assets, so curl + ca-certificates must
+# be present too.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
+    curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock ./
