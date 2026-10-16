@@ -43,5 +43,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /app/nexuscare_backend ./nexuscare_backend
 USER appuser
 
-EXPOSE 8080
+ENV PORT=4044
+EXPOSE 4044
 CMD ["./nexuscare_backend"]
