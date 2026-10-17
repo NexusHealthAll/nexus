@@ -84,7 +84,8 @@ impl HospitalRepository {
                 id, name, registration_number, email, address, phone_number,
                 verification_status, registration_step,
                 admin_registration_status, approved_by, approved_at, rejection_reason, admin_user_id,
-                legal_submitted_at, setup_progress_percent, logo_url, created_at, updated_at
+                legal_submitted_at, setup_progress_percent, logo_url,
+                hospital_type, staff_size, operating_hours, created_at, updated_at
             FROM hospitals
             WHERE id = $1
             "#,
@@ -254,5 +255,115 @@ impl HospitalRepository {
         };
 
         Ok(count)
+    }
+
+    /// Columns every profile read returns. Hoisted so the UPDATE's RETURNING
+    /// and `find_by_id` cannot drift apart — a column listed in one and not
+    /// the other decodes as `None` and looks like a lost write.
+    const PROFILE_COLUMNS: &'static str = "id, name, registration_number, email, address, \
+         phone_number, verification_status, registration_step, admin_registration_status, \
+         approved_by, approved_at, rejection_reason, admin_user_id, legal_submitted_at, \
+         setup_progress_percent, logo_url, hospital_type, staff_size, operating_hours, \
+         created_at, updated_at";
+
+    /// Apply a partial profile update. Every parameter is `Option`, and
+    /// `COALESCE($n, column)` leaves an omitted field untouched — so the
+    /// settings screen can PATCH one field without having to send the rest
+    /// back, which is what makes a concurrent edit of a *different* field
+    /// safe. Returns `None` when no such hospital exists, so the caller can
+    /// 404 without a separate existence check.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_profile(
+        &self,
+        hospital_id: Uuid,
+        name: Option<&str>,
+        email: Option<&str>,
+        address: Option<&str>,
+        phone_number: Option<&str>,
+        logo_url: Option<&str>,
+        hospital_type: Option<&str>,
+        staff_size: Option<i32>,
+        operating_hours: Option<&serde_json::Value>,
+    ) -> Result<Option<Hospital>, RepositoryError> {
+        let sql = format!(
+            r#"
+            UPDATE hospitals
+               SET name            = COALESCE($2, name),
+                   email           = COALESCE($3, email),
+                   address         = COALESCE($4, address),
+                   phone_number    = COALESCE($5, phone_number),
+                   logo_url        = COALESCE($6, logo_url),
+                   hospital_type   = COALESCE($7, hospital_type),
+                   staff_size      = COALESCE($8, staff_size),
+                   operating_hours = COALESCE($9, operating_hours),
+                   updated_at      = NOW()
+             WHERE id = $1
+            RETURNING {}
+            "#,
+            Self::PROFILE_COLUMNS
+        );
+
+        let hospital = sqlx::query_as::<_, Hospital>(&sql)
+            .bind(hospital_id)
+            .bind(name)
+            .bind(email)
+            .bind(address)
+            .bind(phone_number)
+            .bind(logo_url)
+            .bind(hospital_type)
+            .bind(staff_size)
+            .bind(operating_hours)
+            .fetch_optional(&self.pool)
+            .await?;
+
+        Ok(hospital)
+    }
+
+    /// A hospital's departments, in the order they were added.
+    pub async fn list_departments(
+        &self,
+        hospital_id: Uuid,
+    ) -> Result<Vec<String>, RepositoryError> {
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT department FROM hospital_departments \
+             WHERE hospital_id = $1 ORDER BY created_at ASC",
+        )
+        .bind(hospital_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Replace the department set wholesale, in one transaction. Modelled on
+    /// `ClinicianRepository::set_qualifications` — same shape of data, same
+    /// full-replacement contract, so the two should not behave differently.
+    /// Blank entries are dropped rather than rejected: a trailing empty row in
+    /// the settings form is a UI artefact, not a request to fail the save.
+    pub async fn set_departments(
+        &self,
+        hospital_id: Uuid,
+        departments: &[String],
+    ) -> Result<Vec<String>, RepositoryError> {
+        let mut tx: Transaction<'_, Postgres> = self.pool.begin().await?;
+        sqlx::query("DELETE FROM hospital_departments WHERE hospital_id = $1")
+            .bind(hospital_id)
+            .execute(&mut *tx)
+            .await?;
+        for d in departments {
+            let d = d.trim();
+            if d.is_empty() {
+                continue;
+            }
+            sqlx::query(
+                "INSERT INTO hospital_departments (hospital_id, department) \
+                 VALUES ($1, $2) ON CONFLICT (hospital_id, department) DO NOTHING",
+            )
+            .bind(hospital_id)
+            .bind(d)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        self.list_departments(hospital_id).await
     }
 }

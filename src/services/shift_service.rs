@@ -816,13 +816,32 @@ impl ShiftService {
     }
 
     /// Return interested clinicians for a shift, ranked by the
-
+    ///
+    /// `min_years_experience` and `languages` narrow the list the way
+    /// `require_qualification_match` narrows a worker's shift feed — the same
+    /// idea pointed the other way, from the hospital at the worker. Both are
+    /// opt-in and `None` means "do not filter".
+    ///
+    /// Filtering happens here rather than in SQL because the candidate set is
+    /// one shift's expressed interests — tens of rows, already fetched — so a
+    /// second parameterised query would buy nothing. The column index from
+    /// `20240071` is for the same predicate used over the whole table.
     pub async fn list_ranked_interested(
         &self,
         shift_id: Uuid,
         requester_user_id: Uuid,
+        min_years_experience: Option<i32>,
+        languages: Option<&[String]>,
     ) -> Result<Vec<crate::models::shift::RankedInterestedClinician>, ShiftServiceError> {
         use crate::models::shift::RankedInterestedClinician;
+
+        // Normalised once, not per candidate.
+        let wanted_languages: Vec<String> = languages
+            .unwrap_or(&[])
+            .iter()
+            .map(|l| l.trim().to_lowercase())
+            .filter(|l| !l.is_empty())
+            .collect();
 
         let shift = self
             .shift_repo
@@ -847,6 +866,30 @@ impl ShiftService {
             required.iter().map(|s| s.trim().to_lowercase()).collect();
         let mut ranked: Vec<RankedInterestedClinician> = Vec::with_capacity(rows.len());
         for r in rows {
+            // A worker who has not stated a figure is excluded when a minimum
+            // is asked for: an unknown cannot be shown to meet it, and keeping
+            // the unknowns in would make the filter meaningless.
+            if let Some(min) = min_years_experience {
+                match r.years_experience {
+                    Some(years) if years >= min => {}
+                    _ => continue,
+                }
+            }
+
+            // Every requested language must be spoken, not merely one of them —
+            // the same "all requirements met" rule as `quals_match`, since a
+            // hospital asking for two languages needs both at the bedside.
+            if !wanted_languages.is_empty() {
+                let spoken: Vec<String> =
+                    r.languages.iter().map(|l| l.trim().to_lowercase()).collect();
+                if !wanted_languages
+                    .iter()
+                    .all(|want| spoken.iter().any(|s| s == want))
+                {
+                    continue;
+                }
+            }
+
             let distance_km = match (hospital_coords, r.clinician_lat, r.clinician_lng) {
                 (Some((h_lat, h_lng)), Some(c_lat), Some(c_lng)) => {
                     Some(crate::utils::geo::haversine_km(h_lat, h_lng, c_lat, c_lng))
@@ -906,6 +949,8 @@ impl ShiftService {
                 completed_shifts: r.completed_shifts,
                 acceptance_rate_pct,
                 quals_match,
+                years_experience: r.years_experience,
+                languages: r.languages,
                 score,
             });
         }

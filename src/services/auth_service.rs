@@ -19,6 +19,10 @@ pub enum AuthError {
     InvalidToken,
     #[error("Invalid credentials")]
     InvalidCredentials,
+    #[error("Current password is incorrect")]
+    WrongCurrentPassword,
+    #[error("The new password must differ from the current one")]
+    PasswordUnchanged,
     #[error("Account is deactivated")]
     Deactivated,
     #[error("Email queue error: {0}")]
@@ -169,6 +173,71 @@ impl AuthService {
         let content = email_templates::password_reset(&reset_link);
         self.email_outbox.enqueue_email(email, &content).await?;
 
+        Ok(())
+    }
+
+    /// Change the password of an already-authenticated user.
+    ///
+    /// Separate from `reset_password` on purpose: that flow proves identity
+    /// with an emailed single-use token, this one proves it with the current
+    /// password. Re-checking the current password matters even though the
+    /// caller holds a valid JWT — the token may be a stolen one, and without
+    /// this check stealing a token would be enough to take the account.
+    ///
+    /// Every refresh token is revoked in the same transaction as the write.
+    /// A password change is how someone responds to a suspected compromise, so
+    /// leaving the attacker's refresh token live would defeat the point; the
+    /// access token already in the caller's hands stays valid until it expires
+    /// (there is no deny-list for those), so clients should re-login.
+    pub async fn change_password(
+        &self,
+        user_id: Uuid,
+        current_password: &str,
+        new_password: &str,
+    ) -> Result<(), AuthError> {
+        let row: Option<(String, bool)> =
+            sqlx::query_as("SELECT password_hash, is_active FROM users WHERE id = $1")
+                .bind(user_id)
+                .fetch_optional(&self.pool)
+                .await?;
+
+        let (password_hash, is_active) = row.ok_or(AuthError::NotFound)?;
+        if !is_active {
+            return Err(AuthError::Deactivated);
+        }
+
+        let valid = verify_password(current_password, &password_hash)
+            .map_err(|e| AuthError::Internal(e.to_string()))?;
+        if !valid {
+            return Err(AuthError::WrongCurrentPassword);
+        }
+
+        // Argon2 salts every hash, so the stored hash cannot be compared
+        // against a new one directly — verify the new password against the old
+        // hash instead.
+        let unchanged = verify_password(new_password, &password_hash)
+            .map_err(|e| AuthError::Internal(e.to_string()))?;
+        if unchanged {
+            return Err(AuthError::PasswordUnchanged);
+        }
+
+        let new_hash =
+            hash_password(new_password).map_err(|e| AuthError::Internal(e.to_string()))?;
+
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query("UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2")
+            .bind(&new_hash)
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+
+        sqlx::query("UPDATE refresh_tokens SET revoked = TRUE WHERE user_id = $1 AND revoked = FALSE")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+
+        tx.commit().await?;
         Ok(())
     }
 

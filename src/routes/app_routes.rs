@@ -46,6 +46,7 @@ use crate::services::{
     patient_record_service::PatientRecordService,
     payout_service::PayoutService, push_service::PushService,
     hospital_document_service::HospitalDocumentService,
+    hospital_profile_service::HospitalProfileService,
     registration_service::RegistrationService, safehaven::SafeHavenClient,
     search_service::SearchService,
     shift_service::ShiftService, video_service::VideoService, wallet_service::WalletService,
@@ -77,6 +78,7 @@ pub struct AppState {
     pub video_service: Arc<VideoService>,
     pub search_service: Arc<SearchService>,
     pub hospital_document_service: Arc<HospitalDocumentService>,
+    pub hospital_profile_service: Arc<HospitalProfileService>,
 }
 
 #[derive(OpenApi)]
@@ -89,6 +91,8 @@ pub struct AppState {
         crate::handlers::auth::email_otp_verify,
         crate::handlers::auth::admin_login,
         crate::handlers::hospitals::get_hospital,
+        crate::handlers::hospitals::get_hospital_profile,
+        crate::handlers::hospitals::update_hospital,
         crate::handlers::hospitals::create_hospital,
         crate::handlers::hospitals::advance_registration_step,
         crate::handlers::hospitals::get_hospital_location,
@@ -98,6 +102,7 @@ pub struct AppState {
         crate::handlers::auth::me,
         crate::handlers::auth::refresh_token,
         crate::handlers::auth::logout,
+        crate::handlers::auth::change_password,
         crate::handlers::emails::send_email,
         crate::handlers::registration::register_hospital,
         crate::handlers::registration::list_hospitals,
@@ -488,6 +493,11 @@ pub struct AppState {
             crate::models::clinician_registration::BankAccountResponse,
             crate::models::clinician_registration::SetAvatarRequest,
             crate::handlers::hospitals::HospitalLocationResponse,
+            crate::models::hospital::UpdateHospitalRequest,
+            crate::models::hospital::HospitalType,
+            crate::models::hospital::OperatingHours,
+            crate::models::user::ChangePasswordRequest,
+            crate::handlers::shifts::InterestedFilterQuery,
             crate::services::cloudinary::SignedUpload,
             crate::models::clinician::ClinicianAdminSummary,
             // Identity verification
@@ -659,6 +669,8 @@ pub fn create_router(
         pool.clone(),
     ));
 
+    let hospital_profile_service = Arc::new(HospitalProfileService::new(hospital_repo.clone()));
+
     let registration_service = Arc::new(RegistrationService::new(
         hospital_repo,
         location_service,
@@ -804,6 +816,7 @@ pub fn create_router(
         video_service,
         search_service,
         hospital_document_service,
+        hospital_profile_service,
     };
 
     let api_router = Router::new()
@@ -815,6 +828,17 @@ pub fn create_router(
         .route("/api/v1/auth/admin/login", post(auth::admin_login))
         .route("/api/v1/auth/refresh", post(auth::refresh_token))
         .route("/api/v1/auth/logout", post(auth::logout))
+        .route(
+            "/api/v1/auth/change-password",
+            post(auth::change_password).route_layer(from_fn(require_role(&[
+                UserRole::HospitalAdmin,
+                UserRole::HealthWorker,
+                UserRole::SuperAdmin,
+                UserRole::OperationsAdmin,
+                UserRole::VerificationAdmin,
+                UserRole::FinanceAdmin,
+            ]))),
+        )
         // Generic frontend-templated email relay (authenticated).
         .route("/api/v1/emails/send", post(emails::send_email))
         .route("/api/v1/auth/me", get(auth::me))
@@ -834,7 +858,17 @@ pub fn create_router(
         // Existing Hospitals endpoints (legacy - for backward compatibility)
         .route("/api/v1/hospitals/create", post(hospitals::create_hospital))
         .route("/api/v1/hospitals/{id}", get(hospitals::get_hospital))
-        .route("/api/v1/hospitals/{id}", patch(hospitals::update_hospital))
+        .route(
+            "/api/v1/hospitals/{id}",
+            // Authorization is the service's job, not the layer's: the route
+            // guard cannot know which hospital this admin belongs to, and
+            // platform staff reach the same endpoint under a different rule.
+            patch(hospitals::update_hospital),
+        )
+        .route(
+            "/api/v1/hospitals/{id}/profile",
+            get(hospitals::get_hospital_profile),
+        )
         .route(
             "/api/v1/hospitals/{id}/location",
             get(hospitals::get_hospital_location),
@@ -1719,6 +1753,13 @@ mod openapi_tests {
             ("/api/v1/clinicians/{clinician_id}/ratings", "get"),
             ("/api/v1/hospitals/{hospital_id}/ratings", "get"),
             ("/api/v1/shifts/preview", "post"),
+            // Hospital & worker profile gaps.
+            ("/api/v1/hospitals/{id}", "patch"),
+            ("/api/v1/hospitals/{id}/profile", "get"),
+            ("/api/v1/auth/change-password", "post"),
+            ("/api/v1/clinicians/{clinician_id}/qualifications", "get"),
+            ("/api/v1/clinicians/{clinician_id}/qualifications", "put"),
+            ("/api/v1/shifts/{shift_id}/interested", "get"),
         ] {
             let item = paths
                 .get(path)
@@ -1834,6 +1875,14 @@ mod openapi_tests {
             "RatingFeed",
             "RatingFeedItem",
             "ShiftPreviewResponse",
+            // Hospital & worker profile gaps.
+            "UpdateHospitalRequest",
+            "HospitalType",
+            "OperatingHours",
+            "ChangePasswordRequest",
+            "QualificationsResponse",
+            "SetQualificationsRequest",
+            "InterestedFilterQuery",
         ] {
             assert!(
                 schemas.contains_key(name),
@@ -1861,6 +1910,11 @@ mod openapi_tests {
             ("/api/v1/hospitals/{hospital_id}/documents/{document_id}", "delete"),
             ("/api/v1/admin/hospitals/{hospital_id}/documents", "get"),
             ("/api/v1/admin/hospitals/{hospital_id}/documents/{document_id}", "patch"),
+            // Hospital & worker profile gaps.
+            ("/api/v1/hospitals/{id}", "patch"),
+            ("/api/v1/hospitals/{id}/profile", "get"),
+            ("/api/v1/auth/change-password", "post"),
+            ("/api/v1/clinicians/{clinician_id}/qualifications", "put"),
         ] {
             let op = &spec["paths"][path][method];
             assert!(
@@ -1905,6 +1959,24 @@ mod openapi_tests {
                 names.contains(&expected),
                 "nearby query param '{expected}' is in NearbyShiftsQuery but not in the spec; \
                  found {names:?}"
+            );
+        }
+
+        // Same failure mode, same guard: `InterestedFilterQuery`'s fields reach
+        // the spec only through the hand-written `params(...)` list.
+        let names: Vec<&str> = spec["paths"]["/api/v1/shifts/{shift_id}/interested"]["get"]
+            ["parameters"]
+            .as_array()
+            .expect("interested should declare parameters")
+            .iter()
+            .filter_map(|p| p["name"].as_str())
+            .collect();
+
+        for expected in ["shift_id", "min_years_experience", "languages"] {
+            assert!(
+                names.contains(&expected),
+                "interested query param '{expected}' is in InterestedFilterQuery but not in \
+                 the spec; found {names:?}"
             );
         }
     }

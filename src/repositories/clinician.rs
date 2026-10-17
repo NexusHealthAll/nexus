@@ -327,4 +327,85 @@ impl ClinicianRepository {
         tx.commit().await?;
         self.list_qualifications(clinician_id).await
     }
+
+    /// A clinician's spoken languages, in the order they were added.
+    pub async fn list_languages(
+        &self,
+        clinician_id: Uuid,
+    ) -> Result<Vec<String>, ClinicianRepoError> {
+        let rows = sqlx::query_scalar::<_, String>(
+            "SELECT language FROM clinician_languages \
+             WHERE clinician_id = $1 ORDER BY created_at ASC",
+        )
+        .bind(clinician_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows)
+    }
+
+    /// Replace the clinician's language set with `languages` (trimmed, deduped,
+    /// non-empty). Deliberately identical in shape to `set_qualifications`
+    /// above — same full-replacement contract, same transaction, so the two
+    /// cannot drift into behaving differently for the same kind of tag.
+    pub async fn set_languages(
+        &self,
+        clinician_id: Uuid,
+        languages: &[String],
+    ) -> Result<Vec<String>, ClinicianRepoError> {
+        let mut tx: Transaction<'_, Postgres> = self.pool.begin().await?;
+        sqlx::query("DELETE FROM clinician_languages WHERE clinician_id = $1")
+            .bind(clinician_id)
+            .execute(&mut *tx)
+            .await?;
+        for l in languages {
+            let l = l.trim();
+            if l.is_empty() {
+                continue;
+            }
+            sqlx::query(
+                "INSERT INTO clinician_languages (clinician_id, language) \
+                 VALUES ($1, $2) ON CONFLICT (clinician_id, language) DO NOTHING",
+            )
+            .bind(clinician_id)
+            .bind(l)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
+        self.list_languages(clinician_id).await
+    }
+
+    /// Set the clinician's stated years of experience. Returns the stored
+    /// value, which is `None` for a clinician that does not exist — the caller
+    /// has already proved ownership of the id by this point, so there is
+    /// nothing to distinguish.
+    pub async fn set_years_experience(
+        &self,
+        clinician_id: Uuid,
+        years: i32,
+    ) -> Result<Option<i32>, ClinicianRepoError> {
+        let stored = sqlx::query_scalar::<_, Option<i32>>(
+            "UPDATE clinicians SET years_experience = $2, updated_at = NOW() \
+             WHERE id = $1 RETURNING years_experience",
+        )
+        .bind(clinician_id)
+        .bind(years)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(stored.flatten())
+    }
+
+    /// Read back the stated years of experience.
+    pub async fn get_years_experience(
+        &self,
+        clinician_id: Uuid,
+    ) -> Result<Option<i32>, ClinicianRepoError> {
+        let years = sqlx::query_scalar::<_, Option<i32>>(
+            "SELECT years_experience FROM clinicians WHERE id = $1",
+        )
+        .bind(clinician_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(years.flatten())
+    }
 }

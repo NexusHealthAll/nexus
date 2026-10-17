@@ -400,12 +400,47 @@ pub async fn list_shift_applications(
     }))
 }
 
+/// Optional filters for the ranked candidate list.
+///
+/// Both narrow an already-ranked list rather than re-ranking it — the FRS
+/// §3.4.3 weighting is fixed, so "only show me workers who speak Hausa" is a
+/// filter, not a scoring change. Omitting a field does not filter on it.
+#[derive(Debug, Default, serde::Deserialize, ToSchema)]
+pub struct InterestedFilterQuery {
+    /// Minimum stated years in practice. Workers who have not stated a figure
+    /// are excluded when this is set — an unknown cannot be shown to meet a
+    /// minimum.
+    pub min_years_experience: Option<i32>,
+    /// Comma-separated languages the worker must speak, e.g.
+    /// `languages=hausa,english`. Case-insensitive; every language listed must
+    /// be spoken, not just one.
+    pub languages: Option<String>,
+}
+
+impl InterestedFilterQuery {
+    /// Split the CSV into normalised language names. Blank entries are dropped
+    /// so `languages=hausa,` is not a request for an unnamed language.
+    fn language_list(&self) -> Vec<String> {
+        self.languages
+            .as_deref()
+            .map(|raw| {
+                raw.split(',')
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
 /// GET /api/v1/shifts/{shift_id}/interested
 #[utoipa::path(
     get,
     path = "/api/v1/shifts/{shift_id}/interested",
     params(
         ("shift_id" = Uuid, Path, description = "Shift unique identifier"),
+        ("min_years_experience" = Option<i32>, Query, description = "Only return workers whose stated years in practice is at least this. Workers who have not stated a figure are excluded when this is set, since an unknown cannot be shown to meet a minimum."),
+        ("languages" = Option<String>, Query, description = "Comma-separated languages the worker must speak, e.g. `hausa,english`. Case-insensitive, and every language listed must be spoken — the same all-requirements-met rule as the qualifications match.")
     ),
     responses(
         (status = 200, description = "Ranked list of interested clinicians", body = Vec<RankedInterestedClinician>),
@@ -415,20 +450,28 @@ pub async fn list_shift_applications(
     ),
     tag = "shifts",
     summary = "List interested workers ranked",
-    description = "Return clinicians who have expressed interest in this shift, ranked by FRS §3.4.3 scoring (Distance 30, Rating 25, Experience 20, Acceptance 15, Quals 10). Names are masked to last name only until selection."
+    description = "Return clinicians who have expressed interest in this shift, ranked by FRS §3.4.3 scoring (Distance 30, Rating 25, Experience 20, Acceptance 15, Quals 10). Names are masked to last name only until selection. Each entry carries the worker's `years_experience` and `languages` from their profile; `min_years_experience` and `languages` filter the list by them without changing the ranking."
 )]
 pub async fn list_interested_for_shift(
     State(state): State<AppState>,
     Path(shift_id): Path<Uuid>,
+    Query(filters): Query<InterestedFilterQuery>,
     headers: HeaderMap,
 ) -> AppResult<Json<Vec<RankedInterestedClinician>>> {
     let claims = extract_claims(&headers)?;
     let requester_user_id = Uuid::parse_str(&claims.sub)
         .map_err(|_| AppError::Unauthorized("Invalid user ID in token".to_string()))?;
 
+    let languages = filters.language_list();
+
     let ranked = state
         .shift_service
-        .list_ranked_interested(shift_id, requester_user_id)
+        .list_ranked_interested(
+            shift_id,
+            requester_user_id,
+            filters.min_years_experience,
+            (!languages.is_empty()).then_some(languages.as_slice()),
+        )
         .await
         .map_err(map_shift_error)?;
 

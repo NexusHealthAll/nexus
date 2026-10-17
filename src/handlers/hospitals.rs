@@ -1,6 +1,6 @@
 use axum::{
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     Json,
 };
 use uuid::Uuid;
@@ -12,7 +12,11 @@ use crate::{
         UpdateHospitalRequest, VerificationStatus,
     },
     routes::AppState,
-    utils::errors::{AppError, AppResult},
+    services::hospital_profile_service::HospitalProfileError,
+    utils::{
+        errors::{AppError, AppResult},
+        extract_claims,
+    },
 };
 
 /// POST /api/v1/hospitals/create
@@ -109,6 +113,10 @@ pub async fn get_hospital(
             h.registration_step::TEXT             AS registration_step,
             h.setup_progress_percent,
             h.logo_url,
+            h.hospital_type,
+            h.staff_size,
+            h.operating_hours,
+            COALESCE(d.departments, ARRAY[]::TEXT[])                          AS departments,
             h.created_at,
             h.admin_first_name,
             h.admin_last_name,
@@ -141,6 +149,11 @@ pub async fn get_hospital(
             r.avg_payment_timeliness              AS rating_payment_timeliness
         FROM hospitals h
         LEFT JOIN LATERAL (
+            SELECT ARRAY_AGG(hd.department ORDER BY hd.created_at ASC) AS departments
+            FROM hospital_departments hd
+            WHERE hd.hospital_id = h.id
+        ) d ON TRUE
+        LEFT JOIN LATERAL (
             SELECT
                 AVG(sr.score)::FLOAT8                                     AS avg_rating,
                 COUNT(*)                                                  AS rating_count,
@@ -163,48 +176,49 @@ pub async fn get_hospital(
     Ok(Json(hospital))
 }
 
-/// PATCH /api/v1/hospitals/:id
+/// PATCH /api/v1/hospitals/{id}
+#[utoipa::path(
+    patch,
+    path = "/api/v1/hospitals/{id}",
+    params(("id" = Uuid, Path, description = "Hospital id")),
+    request_body = UpdateHospitalRequest,
+    responses(
+        (status = 200, description = "Updated hospital profile", body = HospitalResponse),
+        (status = 401, description = "Missing or invalid token"),
+        (status = 403, description = "Not your hospital, or a role that cannot edit one"),
+        (status = 404, description = "Hospital not found"),
+        (status = 422, description = "Validation error — including malformed operating hours")
+    ),
+    tag = "hospitals",
+    summary = "Update a hospital's profile",
+    description = "Partial update: omitted fields keep their stored value, so the settings screen can send only what changed. `departments` and `operating_hours` are full replacements when present — send the whole list, not a delta — and omitting them leaves the stored list untouched. Set `logo_url` to the `secure_url` returned by Cloudinary after uploading with the payload from GET /api/v1/uploads/signature?kind=hospital_logo. Restricted to the hospital's own admins and to platform staff."
+)]
 pub async fn update_hospital(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
+    headers: HeaderMap,
     Json(payload): Json<UpdateHospitalRequest>,
 ) -> AppResult<Json<HospitalResponse>> {
+    let claims = extract_claims(&headers)?;
+
     payload
         .validate()
         .map_err(|e| AppError::Validation(e.to_string()))?;
 
-    let hospital: Option<Hospital> = sqlx::query_as(
-        r#"
-        UPDATE hospitals
-        SET
-            name         = COALESCE($2, name),
-            email        = COALESCE($3, email),
-            address      = COALESCE($4, address),
-            phone_number = COALESCE($5, phone_number),
-            logo_url     = COALESCE($6, logo_url),
-            updated_at   = NOW()
-        WHERE id = $1
-        RETURNING id, name, registration_number, email, address, phone_number,
-                  verification_status, registration_step, admin_registration_status,
-                  approved_by, approved_at, rejection_reason, admin_user_id,
-                  legal_submitted_at, setup_progress_percent, logo_url,
-                  created_at, updated_at
-        "#,
-    )
-    .bind(id)
-    .bind(&payload.name)
-    .bind(&payload.email)
-    .bind(&payload.address)
-    .bind(&payload.phone_number)
-    .bind(&payload.logo_url)
-    .fetch_optional(&state.pool)
-    .await?;
+    // Coordinates are not part of the hospital row — they live in
+    // `hospital_locations` — so they are taken off the payload before it
+    // reaches the profile service and applied after the profile write
+    // succeeds. Doing it the other way round would move a hospital's geofence
+    // for an update that then 403s.
+    let coordinates = payload.latitude.zip(payload.longitude);
 
-    let hospital =
-        hospital.ok_or_else(|| AppError::NotFound(format!("Hospital {} not found", id)))?;
+    let hospital = state
+        .hospital_profile_service
+        .update_profile(&claims, id, payload)
+        .await
+        .map_err(map_profile_error)?;
 
-    // If exact coordinates were supplied, update the hospital's stored location.
-    if let (Some(lat), Some(lng)) = (payload.latitude, payload.longitude) {
+    if let Some((lat, lng)) = coordinates {
         sqlx::query(
             r#"
             UPDATE hospital_locations
@@ -219,7 +233,56 @@ pub async fn update_hospital(
         .await?;
     }
 
-    Ok(Json(HospitalResponse::from(hospital)))
+    Ok(Json(hospital))
+}
+
+/// GET /api/v1/hospitals/{id}/profile
+#[utoipa::path(
+    get,
+    path = "/api/v1/hospitals/{id}/profile",
+    params(("id" = Uuid, Path, description = "Hospital id")),
+    responses(
+        (status = 200, description = "Editable hospital profile", body = HospitalResponse),
+        (status = 401, description = "Missing or invalid token"),
+        (status = 403, description = "Not your hospital, or a role that cannot read one"),
+        (status = 404, description = "Hospital not found")
+    ),
+    tag = "hospitals",
+    summary = "Get the editable hospital profile",
+    description = "The exact shape PATCH /api/v1/hospitals/{id} accepts back, including the department list and operating hours — this is what the settings form loads. Restricted to the hospital's own admins and to platform staff, under the same rule as the PATCH, because the body carries back-office state (`rejection_reason`, `approved_by`, `admin_user_id`, `admin_registration_status`, `legal_submitted_at`). For the ungated view with ratings and shift counts, use GET /api/v1/hospitals/{id} instead."
+)]
+pub async fn get_hospital_profile(
+    State(state): State<AppState>,
+    Path(id): Path<Uuid>,
+    headers: HeaderMap,
+) -> AppResult<Json<HospitalResponse>> {
+    let claims = extract_claims(&headers)?;
+
+    state
+        .hospital_profile_service
+        .get_profile(&claims, id)
+        .await
+        .map(Json)
+        .map_err(map_profile_error)
+}
+
+/// Each authorization failure keeps its own status and message: a hospital
+/// admin editing the wrong hospital and a clinician editing any hospital are
+/// different mistakes, and collapsing them makes a 403 unreadable.
+fn map_profile_error(e: HospitalProfileError) -> AppError {
+    match e {
+        HospitalProfileError::NotFound => AppError::NotFound("Hospital not found".to_string()),
+        HospitalProfileError::WrongHospital => {
+            AppError::Forbidden("Not your hospital".to_string())
+        }
+        HospitalProfileError::RoleNotPermitted => {
+            AppError::Forbidden("This role cannot edit a hospital profile".to_string())
+        }
+        HospitalProfileError::InvalidOperatingHours(msg) => {
+            AppError::Validation(format!("operating_hours: {msg}"))
+        }
+        HospitalProfileError::Database(e) => AppError::Internal(anyhow::anyhow!("{e}")),
+    }
 }
 
 /// Coordinates + geofence for a hospital (from `hospital_locations`).

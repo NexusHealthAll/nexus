@@ -78,6 +78,14 @@ pub struct Clinician {
     pub is_verified: bool,
     pub is_active: bool,
 
+    /// Years in practice, stated once on the profile (`20240070`). Previously
+    /// this existed only per shift application, so it had to be retyped on
+    /// every application and could not be shown on the profile.
+    /// `#[sqlx(default)]` for the same reason as `acceptance_rate_pct`: the
+    /// explicit column lists elsewhere in this repo do not ask for it.
+    #[sqlx(default)]
+    pub years_experience: Option<i32>,
+
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -170,5 +178,12 @@ pub struct WorkerPublicDetail {
     pub completed_shifts: i64,
     pub latitude: Option<f64>,
     pub longitude: Option<f64>,
+    /// Stated years in practice, or `None` if the worker has not said.
+    pub years_experience: Option<i32>,
+    /// Languages the worker speaks. Aggregated from `clinician_languages` in
+    /// the same query; a hospital choosing who to assign needs to see this
+    /// next to the qualifications, which is why it is on the public card.
+    #[sqlx(default)]
+    pub languages: Vec<String>,
     pub created_at: DateTime<Utc>,
 }

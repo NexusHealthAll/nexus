@@ -129,6 +129,28 @@ pub struct Claims {
     pub iat: usize,
 }
 
+/// Request to change the password of the *logged-in* user.
+///
+/// The user id is never in this body — it comes from the bearer token. A
+/// `user_id` here would let anyone with a valid token reset anyone else's
+/// password, which is the IDOR this codebase refuses to accept from a request
+/// body anywhere.
+#[derive(Debug, Clone, Deserialize, Validate, ToSchema)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+
+    /// Minimum length only. A stricter policy belongs in one place for every
+    /// password entry point (registration, reset, this), and there is no such
+    /// place yet — adding one here alone would reject passwords the reset flow
+    /// still accepts.
+    #[validate(length(
+        min = 8,
+        max = 128,
+        message = "New password must be between 8 and 128 characters"
+    ))]
+    pub new_password: String,
+}
+
 /// Request to send a login OTP to an email address (AC-01).
 #[derive(Debug, Clone, Serialize, Deserialize, Validate, ToSchema)]
 pub struct EmailLoginRequest {

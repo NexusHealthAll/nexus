@@ -11,8 +11,8 @@ use validator::Validate;
 
 use crate::{
     models::user::{
-        EmailLoginRequest, EmailOtpVerifyRequest, LoginRequest, LoginResponse, LogoutRequest,
-        RefreshTokenRequest, UserResponse, UserRole,
+        ChangePasswordRequest, EmailLoginRequest, EmailOtpVerifyRequest, LoginRequest,
+        LoginResponse, LogoutRequest, RefreshTokenRequest, UserResponse, UserRole,
     },
     routes::AppState,
     services::auth_service::AuthError,
@@ -191,6 +191,45 @@ pub async fn logout(
         .map_err(auth_err_to_app)
 }
 
+// Password change for a signed-in user.
+
+/// POST /api/v1/auth/change-password
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/change-password",
+    request_body = ChangePasswordRequest,
+    responses(
+        (status = 204, description = "Password changed; all refresh tokens revoked"),
+        (status = 400, description = "The new password matches the current one"),
+        (status = 401, description = "Missing/invalid token, or the current password is wrong"),
+        (status = 403, description = "Account is deactivated"),
+        (status = 422, description = "Validation error")
+    ),
+    tag = "auth",
+    summary = "Change your own password",
+    description = "For a signed-in user who knows their current password — the in-app alternative to the emailed reset link. The account is taken from the bearer token, never from the body. On success every refresh token for the user is revoked, so other sessions must sign in again; the caller's own access token stays valid until it expires."
+)]
+pub async fn change_password(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(payload): Json<ChangePasswordRequest>,
+) -> AppResult<StatusCode> {
+    let claims = extract_claims(&headers)?;
+    let user_id = Uuid::parse_str(&claims.sub)
+        .map_err(|_| AppError::Unauthorized("Invalid user ID in token".to_string()))?;
+
+    payload
+        .validate()
+        .map_err(|e| AppError::Validation(e.to_string()))?;
+
+    state
+        .auth_service
+        .change_password(user_id, &payload.current_password, &payload.new_password)
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(auth_err_to_app)
+}
+
 // GET /api/v1/auth/me — return the logged-in user's profile.
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -331,6 +370,14 @@ fn auth_err_to_app(e: AuthError) -> AppError {
             AppError::Unauthorized("Invalid email or password".to_string())
         }
         AuthError::Deactivated => AppError::Forbidden("Account is deactivated".to_string()),
+        // 401, not 403: the caller is authenticated but has failed a second
+        // credential check, which is exactly what 401 means.
+        AuthError::WrongCurrentPassword => {
+            AppError::Unauthorized("Current password is incorrect".to_string())
+        }
+        AuthError::PasswordUnchanged => AppError::BadRequest(
+            "The new password must differ from the current one".to_string(),
+        ),
         AuthError::EmailQueue(e) => AppError::Internal(anyhow::anyhow!("Email queue error: {}", e)),
         AuthError::Database(e) => AppError::Database(e),
         AuthError::Internal(msg) => AppError::Internal(anyhow::anyhow!(msg)),
