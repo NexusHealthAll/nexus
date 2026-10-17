@@ -717,6 +717,17 @@ pub struct RankedInterestedClinician {
     pub acceptance_rate_pct: Option<f64>,
     /// Whether the clinician meets every required qualification.
     pub quals_match: bool,
+    /// Stated years in practice, or `None` if the worker has not said.
+    ///
+    /// Shown next to `quals_match` because it is the same kind of judgement
+    /// call: both answer "can this person do this shift". It does not enter
+    /// `score` — the weighting is fixed by FRS §3.4.3 (Distance 30, Rating 25,
+    /// Experience 20, Acceptance 15, Quals 10), and `experience_score` there
+    /// already means completed shifts on the platform. Re-pointing it at
+    /// self-declared years would change what every existing score means.
+    pub years_experience: Option<i32>,
+    /// Languages the worker speaks. Empty when none are recorded.
+    pub languages: Vec<String>,
     /// Total weighted score (0–100) per .
     pub score: f64,
 }

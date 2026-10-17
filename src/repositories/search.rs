@@ -112,7 +112,16 @@ impl SearchRepository {
                 OR c.last_name            ILIKE $2
                 OR c.role_title           ILIKE $2
                 OR c.specialty::text      ILIKE $2
-                OR CONCAT_WS(' ', c.first_name, c.last_name) ILIKE $2)
+                OR CONCAT_WS(' ', c.first_name, c.last_name) ILIKE $2
+                -- A spoken language is part of how a hospital finds a worker
+                -- ("who can talk to this patient?"), so searching "Yoruba"
+                -- finds the people who speak it. Backed by
+                -- `idx_clinician_languages_lower` from `20240070`.
+                OR EXISTS (
+                       SELECT 1 FROM clinician_languages cgl
+                       WHERE cgl.clinician_id = c.id
+                         AND cgl.language ILIKE $2
+                   ))
               AND EXISTS (
                   SELECT 1
                   FROM shifts s

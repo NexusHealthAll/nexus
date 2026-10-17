@@ -1,0 +1,12 @@
+/target
+.env
+.git
+.github
+ml-service
+docs
+tests
+dev
+proptest-regressions
+*.md
+*.xlsx
+uploads

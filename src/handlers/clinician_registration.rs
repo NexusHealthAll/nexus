@@ -85,9 +85,16 @@ pub async fn get_worker_public(
                 AND s.status = 'completed')::BIGINT                            AS completed_shifts,
             cl.latitude   AS latitude,
             cl.longitude  AS longitude,
+            c.years_experience,
+            COALESCE(lg.languages, ARRAY[]::TEXT[])                        AS languages,
             c.created_at
         FROM clinicians c
         LEFT JOIN clinician_locations cl ON cl.clinician_id = c.id
+        LEFT JOIN LATERAL (
+            SELECT ARRAY_AGG(l.language ORDER BY l.created_at ASC) AS languages
+            FROM clinician_languages l
+            WHERE l.clinician_id = c.id
+        ) lg ON TRUE
         WHERE c.id = $1
         "#,
     )
@@ -99,17 +106,34 @@ pub async fn get_worker_public(
     Ok(Json(worker))
 }
 
-/// Body for setting a clinician's qualification tags.
-#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
+/// Body for setting a clinician's self-declared profile attributes.
+///
+/// `qualifications` stays required so the existing contract is unchanged — a
+/// client that only knows about qualifications keeps working. The two new
+/// fields are optional and *omitting* one leaves the stored value alone, which
+/// is what lets the profile screen save one section without having to send the
+/// others back.
+#[derive(Debug, serde::Deserialize, utoipa::ToSchema, validator::Validate)]
 pub struct SetQualificationsRequest {
     /// Full replacement set of qualification tags (trimmed, deduped server-side).
     pub qualifications: Vec<String>,
+
+    /// Years in practice. Omitted leaves the stored value; the DB rail is
+    /// 0–70 (`20240070`) and this mirrors it so a typo is a readable 422.
+    #[validate(range(min = 0, max = 70))]
+    pub years_experience: Option<i32>,
+
+    /// Full replacement set of spoken languages. An empty list clears them.
+    pub languages: Option<Vec<String>>,
 }
 
-/// A clinician's persisted qualification tags.
+/// A clinician's persisted profile attributes.
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct QualificationsResponse {
     pub qualifications: Vec<String>,
+    /// `None` when the worker has not stated it.
+    pub years_experience: Option<i32>,
+    pub languages: Vec<String>,
 }
 
 /// GET /api/v1/clinicians/{clinician_id}/qualifications
@@ -117,20 +141,32 @@ pub struct QualificationsResponse {
     get,
     path = "/api/v1/clinicians/{clinician_id}/qualifications",
     params(("clinician_id" = Uuid, Path, description = "Clinician id")),
-    responses((status = 200, description = "Qualification tags", body = QualificationsResponse)),
+    responses((status = 200, description = "Qualification tags, years of experience and languages", body = QualificationsResponse)),
     tag = "clinicians",
-    summary = "List a clinician's qualifications"
+    summary = "List a clinician's qualifications, experience and languages"
 )]
 pub async fn get_qualifications(
     State(state): State<AppState>,
     Path(clinician_id): Path<Uuid>,
 ) -> AppResult<Json<QualificationsResponse>> {
-    let qualifications = state
-        .clinician_repo
+    let repo = &state.clinician_repo;
+    let internal = |e| AppError::Internal(anyhow::anyhow!("{e}"));
+
+    let qualifications = repo
         .list_qualifications(clinician_id)
         .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("{e}")))?;
-    Ok(Json(QualificationsResponse { qualifications }))
+        .map_err(internal)?;
+    let languages = repo.list_languages(clinician_id).await.map_err(internal)?;
+    let years_experience = repo
+        .get_years_experience(clinician_id)
+        .await
+        .map_err(internal)?;
+
+    Ok(Json(QualificationsResponse {
+        qualifications,
+        years_experience,
+        languages,
+    }))
 }
 
 /// PUT /api/v1/clinicians/{clinician_id}/qualifications
@@ -140,11 +176,13 @@ pub async fn get_qualifications(
     params(("clinician_id" = Uuid, Path, description = "Clinician id")),
     request_body = SetQualificationsRequest,
     responses(
-        (status = 200, description = "Updated qualifications", body = QualificationsResponse),
-        (status = 403, description = "Not your clinician profile")
+        (status = 200, description = "Updated profile attributes", body = QualificationsResponse),
+        (status = 403, description = "Not your clinician profile"),
+        (status = 422, description = "Validation error")
     ),
     tag = "clinicians",
-    summary = "Replace a clinician's qualifications (feeds shift matching)"
+    summary = "Replace a clinician's qualifications, experience and languages",
+    description = "`qualifications` and `languages` are full replacements — send the whole list, not a delta. `years_experience` and `languages` are optional and an omitted field leaves the stored value untouched; an empty `languages` list clears them. Qualifications feed shift matching; experience and languages are profile data a hospital sees on GET /api/v1/workers/{id}."
 )]
 pub async fn set_qualifications(
     State(state): State<AppState>,
@@ -153,12 +191,41 @@ pub async fn set_qualifications(
     Json(req): Json<SetQualificationsRequest>,
 ) -> AppResult<Json<QualificationsResponse>> {
     require_own_clinician(&state, &headers, clinician_id).await?;
-    let qualifications = state
-        .clinician_repo
+    req.validate()
+        .map_err(|e| AppError::Validation(e.to_string()))?;
+
+    let repo = &state.clinician_repo;
+    let internal = |e| AppError::Internal(anyhow::anyhow!("{e}"));
+
+    let qualifications = repo
         .set_qualifications(clinician_id, &req.qualifications)
         .await
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("{e}")))?;
-    Ok(Json(QualificationsResponse { qualifications }))
+        .map_err(internal)?;
+
+    let languages = match req.languages {
+        Some(list) => repo
+            .set_languages(clinician_id, &list)
+            .await
+            .map_err(internal)?,
+        None => repo.list_languages(clinician_id).await.map_err(internal)?,
+    };
+
+    let years_experience = match req.years_experience {
+        Some(years) => repo
+            .set_years_experience(clinician_id, years)
+            .await
+            .map_err(internal)?,
+        None => repo
+            .get_years_experience(clinician_id)
+            .await
+            .map_err(internal)?,
+    };
+
+    Ok(Json(QualificationsResponse {
+        qualifications,
+        years_experience,
+        languages,
+    }))
 }
 
 /// POST /api/v1/clinicians/otp/send

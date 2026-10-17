@@ -23,6 +23,13 @@ pub struct InterestedClinicianRow {
     pub expires: i64,
     pub clinician_lat: Option<f64>,
     pub clinician_lng: Option<f64>,
+    /// Stated years in practice (`20240070`), or `None` if the worker has not
+    /// said. Fetched with the row rather than per candidate: the
+    /// qualifications check in `list_ranked_interested` already costs one query
+    /// per candidate, and there was no reason to add two more.
+    pub years_experience: Option<i32>,
+    /// Languages the worker speaks, aggregated in the same query.
+    pub languages: Vec<String>,
 }
 
 /// Raw row backing the eligibility query. The service decides
@@ -208,10 +215,17 @@ impl ShiftRepository {
                 (SELECT COUNT(*) FROM shift_assignments a
                     WHERE a.clinician_id = c.id AND a.status = 'expired')  AS expires,
                 cl.latitude  AS clinician_lat,
-                cl.longitude AS clinician_lng
+                cl.longitude AS clinician_lng,
+                c.years_experience,
+                COALESCE(lg.languages, ARRAY[]::TEXT[])               AS languages
             FROM shift_interests si
             JOIN clinicians c          ON c.id = si.clinician_id
             LEFT JOIN clinician_locations cl ON cl.clinician_id = c.id
+            LEFT JOIN LATERAL (
+                SELECT ARRAY_AGG(l.language ORDER BY l.created_at ASC) AS languages
+                FROM clinician_languages l
+                WHERE l.clinician_id = c.id
+            ) lg ON TRUE
             WHERE si.shift_id = $1
             ORDER BY si.expressed_at ASC
             "#,
@@ -976,7 +990,7 @@ impl ShiftRepository {
     ///
     /// The bounding-box predicate is an index-friendly prefilter; correctness
     /// comes from the exact haversine `<= radius_km` gate that follows it.
-    #[allow(clippy::too_many_arguments)]
+    ///
     /// `require_qualification_match` restricts results to shifts whose every
     /// `shift_requirements` row is matched by one of this clinician's
     /// `clinician_qualifications`.
@@ -986,10 +1000,11 @@ impl ShiftRepository {
     /// "Medical License (MDCN)" do not match, and making this mandatory would
     /// empty most workers' feeds. The comparison is case-insensitive substring
     /// containment, matching the ranking logic in
-    /// `ShiftService::rank_interested_clinicians` rather than the stricter exact
+    /// `ShiftService::list_ranked_interested` rather than the stricter exact
     /// equality in `match_qualifications` — two semantics for one concept
     /// already exist in this codebase, and the looser one is the right default
     /// for a discovery filter.
+    #[allow(clippy::too_many_arguments)]
     pub async fn list_nearby_shifts(
         &self,
         clinician_id: Uuid,

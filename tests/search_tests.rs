@@ -676,3 +676,56 @@ async fn the_handover_bucket_finds_notes_on_our_own_shifts() {
         "a handover hit should link back to its shift"
     );
 }
+
+/// A spoken language is findable through the ordinary search box, which is what
+/// makes the profile field useful to a hospital rather than merely stored.
+/// Scoped like every other clinician hit: speaking the language is not itself a
+/// relationship with the hospital.
+#[tokio::test]
+async fn a_clinician_is_found_by_a_language_they_speak() {
+    let Some(pool) = test_pool().await else { return };
+    let svc = search_service(&pool);
+
+    let hospital_id = seed_hospital(&pool).await;
+    let admin = seed_user(&pool, "hospital_admin", Some(hospital_id)).await;
+    let (ours, _, _) = seed_clinician(&pool, &token()).await;
+    let (stranger, _, _) = seed_clinician(&pool, &token()).await;
+
+    // A language nobody's name or role title could match on.
+    let language = format!("Tiv{}", token());
+    for c in [ours, stranger] {
+        sqlx::query("INSERT INTO clinician_languages (clinician_id, language) VALUES ($1, $2)")
+            .bind(c)
+            .bind(&language)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    // Only `ours` has worked here.
+    let shift_id = seed_shift(&pool, hospital_id, admin, "Emergency Doctor", None).await;
+    sqlx::query("INSERT INTO shift_interests (shift_id, clinician_id) VALUES ($1, $2)")
+        .bind(shift_id)
+        .bind(ours)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let results = svc
+        .search(
+            &claims(admin, UserRole::HospitalAdmin, Some(hospital_id)),
+            &language,
+            None,
+            None,
+        )
+        .await
+        .expect("search should succeed");
+
+    let ids: Vec<_> = results.clinicians.iter().map(|c| c.id).collect();
+    assert_eq!(
+        ids,
+        vec![ours],
+        "the language should find our own worker and not the stranger; got {:?}",
+        results.clinicians
+    );
+}
