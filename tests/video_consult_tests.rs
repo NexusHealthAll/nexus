@@ -166,6 +166,24 @@ async fn seed_hospital(pool: &PgPool) -> Uuid {
     .expect("failed to seed hospital")
 }
 
+/// Pin the hospital on the map. `seed_hospital` deliberately leaves
+/// `hospital_locations` empty, so tests that care about coordinates add the row
+/// themselves.
+async fn seed_hospital_location(pool: &PgPool, hospital_id: Uuid, lat: f64, lng: f64) {
+    sqlx::query(
+        r#"
+        INSERT INTO hospital_locations (hospital_id, latitude, longitude, location_confirmed)
+        VALUES ($1, $2, $3, TRUE)
+        "#,
+    )
+    .bind(hospital_id)
+    .bind(lat)
+    .bind(lng)
+    .execute(pool)
+    .await
+    .expect("failed to seed hospital location");
+}
+
 async fn seed_user(pool: &PgPool, role: &str, hospital_id: Option<Uuid>) -> Uuid {
     sqlx::query_scalar(
         r#"
@@ -552,6 +570,41 @@ async fn a_worker_cannot_request_observer_mode() {
         .expect_err("observer mode is a hospital affordance");
 
     assert!(matches!(error, VideoServiceError::NotAuthorized));
+}
+
+/// A virtual call is attended from wherever the clinician happens to be, so
+/// distance from the hospital must never block a join — with or without GPS in
+/// the request. The hospital here is pinned in Abuja while the worker reports
+/// Lagos coordinates, ~525 km away.
+#[tokio::test]
+async fn distance_from_the_hospital_never_blocks_a_virtual_join() {
+    let Some(pool) = test_pool().await else { return };
+    let service = video_service(&pool, false);
+    let fixture = seed_fixture(&pool).await;
+    seed_hospital_location(&pool, fixture.hospital_id, 9.0765, 7.3986).await;
+
+    service
+        .issue_join_token(
+            fixture.shift_id,
+            &fixture.worker_claims(),
+            JoinConsultRequest::default(),
+        )
+        .await
+        .expect("no coordinates at all is not a reason to refuse a virtual join");
+
+    service
+        .issue_join_token(
+            fixture.shift_id,
+            &fixture.worker_claims(),
+            JoinConsultRequest {
+                mode: None,
+                device_label: None,
+                lat: Some(6.5244),
+                lng: Some(3.3792),
+            },
+        )
+        .await
+        .expect("525 km from the hospital is not a reason to refuse a virtual join");
 }
 
 // 8 — joining is clocking in.

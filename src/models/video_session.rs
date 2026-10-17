@@ -200,11 +200,11 @@ pub struct JoinConsultRequest {
     /// Free text, stored in the audit trail only.
     #[serde(default)]
     pub device_label: Option<String>,
-    /// Worker's current GPS latitude — required for a clinician to join when the
-    /// hospital has a location on file (10 km geofence). Ignored for observers.
+    /// Worker's current GPS latitude. Accepted and ignored: joining a virtual
+    /// call is not location-gated. Kept so existing clients keep working.
     #[serde(default)]
     pub lat: Option<f64>,
-    /// Worker's current GPS longitude (pairs with `lat`).
+    /// Worker's current GPS longitude (pairs with `lat`). Also ignored.
     #[serde(default)]
     pub lng: Option<f64>,
 }
