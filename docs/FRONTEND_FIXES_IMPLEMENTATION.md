@@ -11,7 +11,7 @@ usual `Authorization: Bearer <JWT>` header unless noted.
 | 3 | Handover reminder/appeal | Button + call endpoint | `POST /shifts/{id}/handover/appeal` |
 | 4 | Platform fee cap | Admin settings field | `GET/PUT /admin/settings` (new `platform_fee_cap_kobo`) |
 | 5 | Shift file attachments | Upload to Cloudinary, send URLs | `POST /shifts` (new `attachment_urls`) |
-| 6 | 10 km geofence for call | Send GPS on join | `POST /shifts/{id}/consult/token` (new `lat`/`lng`) |
+| 6 | ~~10 km geofence for call~~ **withdrawn** | Nothing — joining a call is not location-gated | `POST /shifts/{id}/consult/token` (`lat`/`lng` accepted, ignored) |
 
 ---
 
@@ -178,33 +178,45 @@ shift-detail screen.
 
 ---
 
-## 6. 10 km geofence before joining a call
+## 6. Joining a call is not location-gated (geofence withdrawn)
 
-A clinician must be **within 10 km of the hospital** to get a video join token.
-The join request now accepts `lat`/`lng`; send the worker's current GPS.
+The 10 km geofence this section originally described **has been removed.** A
+virtual consultation is attended from wherever the clinician happens to be —
+home, a second site, in transit — so distance from the hospital is never a
+condition of getting a join token.
 
 ```
 POST /api/v1/shifts/{shift_id}/consult/token    (role: health worker / hospital admin)
 ```
 ```json
-{ "lat": 6.5244, "lng": 3.3792, "device_label": "iPhone 14" }
+{ "device_label": "iPhone 14" }
 ```
 
-**Behaviour (for a clinician joining a virtual shift whose hospital has coordinates):**
-- Missing `lat`/`lng` → **400** `"Your location (lat/lng) is required to join this consultation"`.
-- More than 10 km away → **403** `"You are 12.4 km from the hospital — you must be within 10 km to join"`.
-- Within 10 km → **200** with the join token (unchanged response shape).
+**Behaviour for any clinician joining a virtual shift:**
+- No `lat`/`lng` → **200** with the join token.
+- Any distance from the hospital → **200** with the join token.
+- `lat`/`lng` are still accepted on the request body so existing clients keep
+  working, but the backend ignores them. There is no longer a `400
+  LocationRequired` or a `403` distance refusal on this endpoint.
 
-**Exempt from the check:** hospital admins joining as observers, and hospitals
-that have no location on file.
+The other join gates are unchanged: the shift must be virtual, its status
+joinable, the caller the assigned clinician or an admin of the owning hospital,
+and the request inside the consultation window (one hour either side).
 
-**Frontend flow:**
-1. Request browser geolocation (`navigator.geolocation.getCurrentPosition`).
-2. Send `lat`/`lng` in the join request.
-3. Optionally pre-check distance client-side to grey out "Join" and explain why —
-   but the backend is the source of truth (a `403`/`400` can still come back).
-4. Handle geolocation denial: prompt the user to enable location; without it the
-   join will `400`.
+**Frontend flow:** drop the geolocation prompt on the pre-join screen entirely.
+Do not pre-check distance and do not grey out "Join" for being far away.
+
+### Where the radius does apply: physical GPS clock-in
+
+The distance check belongs to the **physical** clock-in alone
+(`POST /api/v1/shifts/{id}/clock-in` with `method: "gps"`), and its radius is
+**250 m**, not 10 km:
+
+- Default `clock_in_radius_meters` is **250** (migration `20240072`); a hospital
+  can set its own between 50 m and 5000 m on its location record.
+- Outside it → **409** `"Clock-in location is N metres from the hospital — outside the geofence"`,
+  with the photo-plus-coordinates manual-review fallback as the escape hatch.
+- `method: "virtual"` (virtual shifts) takes no coordinates and has no radius.
 
 ---
 
@@ -216,7 +228,8 @@ All six were implemented and **verified against a local Postgres database**:
 - **#3** — appeal before 1 day → `409`; after → `200` (records appeal + emails hospital); second appeal → `409`.
 - **#4** — unit test for `fee = min(gross × %, cap)` (percent, cap-wins, cap-noop, 0%, `gross == fee + net`) passes.
 - **#5** — shift detail returns `attachment_urls`.
-- **#6** — worker ~526 km away → `403` (with distance); no location → `400`; within 10 km → `200`.
+- **#6** — withdrawn; now the opposite is asserted: worker ~525 km away → `200`, no location → `200`
+  (`distance_from_the_hospital_never_blocks_a_virtual_join` in `tests/video_consult_tests.rs`).
 - **#2** — already existed (auto-approve scheduler); no change.
 
 Build is clean. **Not yet exercised against the Neon/production database** — that

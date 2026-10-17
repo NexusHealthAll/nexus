@@ -54,7 +54,7 @@ pub struct SetHospitalLocationRequest {
 
     pub place_label: Option<String>,
 
-    /// Defaults to 100 if not provided
+    /// Defaults to 250 if not provided
     #[validate(range(
         min = 50,
         max = 5000,

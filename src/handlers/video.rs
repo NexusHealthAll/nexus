@@ -264,14 +264,6 @@ fn map_video_error(e: VideoServiceError) -> AppError {
         VideoServiceError::SessionEnded => {
             AppError::Conflict("This consultation has already ended".to_string())
         }
-        VideoServiceError::LocationRequired => AppError::BadRequest(
-            "Your location (lat/lng) is required to join this consultation".to_string(),
-        ),
-        VideoServiceError::OutsideGeofence { distance_km, limit_km } => AppError::Forbidden(
-            format!(
-                "You are {distance_km:.1} km from the hospital — you must be within {limit_km:.0} km to join"
-            ),
-        ),
         VideoServiceError::NotConfigured => {
             AppError::InternalServerError("Video service is not configured".to_string())
         }

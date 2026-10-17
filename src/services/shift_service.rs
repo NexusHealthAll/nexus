@@ -1350,7 +1350,7 @@ impl ShiftService {
                     .shift_repo
                     .get_clock_in_radius_meters(shift.hospital_id)
                     .await?
-                    .unwrap_or(100);
+                    .unwrap_or(250);
 
                 let distance_km = crate::utils::geo::haversine_km(h_lat, h_lng, lat, lng);
                 let distance_m = distance_km * 1000.0;
